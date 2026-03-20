@@ -82,8 +82,18 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if m.ActiveTab == TabDiff {
 			return m, nil
 		}
+		if m.UIMode == ModeFolder {
+			m.RepoPathInput = newRepoPathInput()
+			m.RepoPathInputActive = true
+			return m, nil
+		}
 		m.AddRepoRequested = true
 		m.StatusMessage = "add repo requested"
+	case MsgSubmitRepoPath:
+		if m.UIMode != ModeFolder {
+			return m, nil
+		}
+		return submitFolderRepoPath(m, msg.Path)
 	case MsgCreateWorktree:
 		if m.ActiveTab == TabDiff {
 			return m, nil
@@ -113,6 +123,9 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := requestSyncTick(m)
 		return next, tea.Batch(syncCmd, scheduleSyncPolling(next))
 	case tea.KeyMsg:
+		if m.RepoPathInputActive {
+			return handleRepoPathInputKey(m, msg)
+		}
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
 		}
@@ -121,6 +134,11 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		}
 		switch {
 		case key.Matches(msg, m.Keys.AddRepo):
+			if m.UIMode == ModeFolder {
+				m.RepoPathInput = newRepoPathInput()
+				m.RepoPathInputActive = true
+				return m, nil
+			}
 			return m, func() tea.Msg { return MsgRequestAddRepo{} }
 		case key.Matches(msg, m.Keys.RemoveRepo):
 			if removed, ok := m.State.RemoveCurrentRepo(); ok {
@@ -219,6 +237,52 @@ func selectAdjacentWorkspaceModeWorkspace(m Model, forward bool) (Model, bool) {
 	m.State.Snapshot.SelectedWorkspaceID = nextWorkspaceID
 	m.State.ensureSelection()
 	return m, true
+}
+
+func handleRepoPathInputKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd) {
+	submitted, canceled, _ := m.RepoPathInput.Update(msg)
+	switch {
+	case canceled:
+		m.RepoPathInputActive = false
+		m.RepoPathInput = newRepoPathInput()
+		return m, nil
+	case submitted:
+		path := m.RepoPathInput.Value()
+		m.RepoPathInputActive = false
+		m.RepoPathInput = newRepoPathInput()
+		return m, func() tea.Msg {
+			return MsgSubmitRepoPath{Path: path}
+		}
+	default:
+		return m, nil
+	}
+}
+
+func submitFolderRepoPath(m Model, path string) (Model, tea.Cmd) {
+	if m.RepoPathSubmitter == nil {
+		m.StatusMessage = "repo path submitter unavailable"
+		return m, nil
+	}
+
+	result, err := m.RepoPathSubmitter.SubmitRepoPath(context.Background(), path)
+	if err != nil {
+		m.StatusMessage = "failed to submit repo path: " + err.Error()
+		return m, nil
+	}
+
+	m.State = NewWorkspaceState(result.State)
+	statusMessage := strings.TrimSpace(result.StatusMessage)
+	if statusMessage == "" {
+		if repo, ok := m.State.CurrentRepo(); ok && strings.TrimSpace(repo.Name) != "" {
+			statusMessage = "added repo: " + repo.Name
+		} else {
+			statusMessage = "current folder is not a git repo"
+		}
+	}
+	m.StatusMessage = statusMessage
+
+	m = publishSyncState(m)
+	return syncOnSelectionChanged(m)
 }
 
 func ensureLazygitSession(m Model) Model {

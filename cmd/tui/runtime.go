@@ -73,6 +73,7 @@ func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, fu
 		SyncEngine:         engine,
 		StateStore:         stateStore,
 		SyncStatePublisher: selectedRepoFetcher,
+		RepoPathSubmitter:  runtimeRepoPathSubmitter{stateStore: stateStore},
 	})
 	if strings.TrimSpace(statusMessage) != "" {
 		model.StatusMessage = statusMessage
@@ -173,6 +174,65 @@ func uiModeForLaunchMode(mode LaunchMode) app.UIMode {
 		return app.ModeFolder
 	}
 	return app.ModeWorkspace
+}
+
+type runtimeRepoPathSubmitter struct {
+	stateStore workspace.StateStore
+}
+
+func (s runtimeRepoPathSubmitter) SubmitRepoPath(ctx context.Context, path string) (app.RepoPathSubmissionResult, error) {
+	if s.stateStore == nil {
+		return app.RepoPathSubmissionResult{}, errors.New("state store not configured")
+	}
+	svc := workspace.NewService(s.stateStore)
+	statusMessage, err := applyFolderLaunchIntent(ctx, svc, path)
+	if err != nil {
+		return app.RepoPathSubmissionResult{}, err
+	}
+
+	state, err := s.stateStore.Load(ctx)
+	if err != nil {
+		return app.RepoPathSubmissionResult{}, err
+	}
+	if strings.TrimSpace(statusMessage) == "" {
+		if repoName, ok := selectedRepoName(state); ok {
+			statusMessage = "added repo: " + repoName
+		}
+	}
+
+	return app.RepoPathSubmissionResult{
+		State:         state,
+		StatusMessage: statusMessage,
+	}, nil
+}
+
+func selectedRepoName(state workspace.State) (string, bool) {
+	workspaceID := strings.TrimSpace(state.SelectedWorkspaceID)
+	if workspaceID == "" {
+		return "", false
+	}
+
+	for _, ws := range state.Workspaces {
+		if ws.ID != workspaceID {
+			continue
+		}
+		selectedRepoID := strings.TrimSpace(ws.SelectedRepoID)
+		if selectedRepoID == "" {
+			return "", false
+		}
+		for _, repo := range ws.Repos {
+			if repo.ID != selectedRepoID {
+				continue
+			}
+			name := strings.TrimSpace(repo.Name)
+			if name == "" {
+				return "", false
+			}
+			return name, true
+		}
+		return "", false
+	}
+	return "", false
 }
 
 func isTestMode() bool {

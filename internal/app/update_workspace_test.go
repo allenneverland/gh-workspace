@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -199,6 +200,133 @@ func TestUpdate_FolderMode_WorkspaceKeysAreDisabled(t *testing.T) {
 	}
 }
 
+func TestUpdate_FolderMode_KeyAddRepo_ActivatesRepoPathInput(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if cmd != nil {
+		t.Fatal("expected no command when entering folder-mode repo path input")
+	}
+	got := updated.(Model)
+	if !got.RepoPathInputActive {
+		t.Fatal("expected repo path input to become active in folder mode")
+	}
+}
+
+func TestUpdate_FolderMode_RepoPathInput_EnterSubmitsPath(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+
+	step, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	active := step.(Model)
+	step, _ = active.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/tmp/new-repo")})
+	typed := step.(Model)
+
+	updated, cmd := typed.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected enter in repo path input mode to emit submit command")
+	}
+
+	msg := cmd()
+	submit, ok := msg.(MsgSubmitRepoPath)
+	if !ok {
+		t.Fatalf("expected submit message type %T, got %T", MsgSubmitRepoPath{}, msg)
+	}
+	if submit.Path != "/tmp/new-repo" {
+		t.Fatalf("expected submitted path %q, got %q", "/tmp/new-repo", submit.Path)
+	}
+
+	got := updated.(Model)
+	if got.RepoPathInputActive {
+		t.Fatal("expected repo path input to close after submit")
+	}
+}
+
+func TestUpdate_FolderMode_RepoPathInput_EscCancelsWithoutMutation(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+	originalRepoID := m.State.CurrentRepoID()
+
+	step, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	active := step.(Model)
+	updated, cmd := active.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("expected esc cancel path input to emit no command")
+	}
+
+	got := updated.(Model)
+	if got.RepoPathInputActive {
+		t.Fatal("expected esc to close repo path input")
+	}
+	if got.State.CurrentRepoID() != originalRepoID {
+		t.Fatalf("expected cancel to preserve selected repo %q, got %q", originalRepoID, got.State.CurrentRepoID())
+	}
+}
+
+func TestUpdate_FolderMode_SubmitRepoPath_InvalidClearsSelection(t *testing.T) {
+	submitter := &fakeRepoPathSubmitter{
+		result: RepoPathSubmissionResult{
+			State:         localWorkspaceStateWithoutRepo(),
+			StatusMessage: "current folder is not a git repo",
+		},
+	}
+	m := NewModel(Config{
+		InitialUIMode:     ModeFolder,
+		InitialState:      localWorkspaceStateWithRepo("/tmp/old"),
+		RepoPathSubmitter: submitter,
+	})
+
+	updated, _ := m.Update(MsgSubmitRepoPath{Path: "/tmp/not-a-repo"})
+	got := updated.(Model)
+	if submitter.calls != 1 || submitter.lastPath != "/tmp/not-a-repo" {
+		t.Fatalf("expected submitter to be called once with path %q, got calls=%d path=%q", "/tmp/not-a-repo", submitter.calls, submitter.lastPath)
+	}
+	if got.State.CurrentRepoID() != "" {
+		t.Fatalf("expected local repo selection cleared, got %q", got.State.CurrentRepoID())
+	}
+	if got.StatusMessage != "current folder is not a git repo" {
+		t.Fatalf("expected status %q, got %q", "current folder is not a git repo", got.StatusMessage)
+	}
+}
+
+func TestUpdate_FolderMode_SubmitRepoPath_ValidReplacesSelection(t *testing.T) {
+	replaced := workspace.State{
+		SelectedWorkspaceID: workspace.LocalWorkspaceID,
+		Workspaces: []workspace.Workspace{
+			{
+				ID:             workspace.LocalWorkspaceID,
+				Name:           workspace.LocalWorkspaceName,
+				SelectedRepoID: "repo-new",
+				Repos: []workspace.Repo{
+					{ID: "repo-new", Name: "new-repo", Path: "/tmp/new-repo", Health: workspace.RepoHealthy},
+				},
+			},
+		},
+	}
+	submitter := &fakeRepoPathSubmitter{
+		result: RepoPathSubmissionResult{
+			State:         replaced,
+			StatusMessage: "added repo: new-repo",
+		},
+	}
+	m := NewModel(Config{
+		InitialUIMode:     ModeFolder,
+		InitialState:      localWorkspaceStateWithRepo("/tmp/old"),
+		RepoPathSubmitter: submitter,
+	})
+
+	updated, _ := m.Update(MsgSubmitRepoPath{Path: "/tmp/new-repo"})
+	got := updated.(Model)
+	repo, ok := got.State.CurrentRepo()
+	if !ok {
+		t.Fatal("expected selected repo after valid submit")
+	}
+	if repo.Path != "/tmp/new-repo" {
+		t.Fatalf("expected selected repo path %q, got %q", "/tmp/new-repo", repo.Path)
+	}
+	if got.StatusMessage != "added repo: new-repo" {
+		t.Fatalf("expected status %q, got %q", "added repo: new-repo", got.StatusMessage)
+	}
+}
+
 func TestUpdate_WorkspaceMode_NavigationSkipsSystemWorkspace(t *testing.T) {
 	m := seededModelWithSystemAndUserWorkspaces()
 	m.State.Snapshot.Workspaces = append(
@@ -303,4 +431,55 @@ func singleRepoState(path string, health workspace.RepoHealth) workspace.State {
 			},
 		},
 	}
+}
+
+func seededFolderModeModelWithLocalRepo() Model {
+	return NewModel(Config{
+		InitialUIMode: ModeFolder,
+		InitialState:  localWorkspaceStateWithRepo("/tmp/current"),
+	})
+}
+
+func localWorkspaceStateWithRepo(path string) workspace.State {
+	return workspace.State{
+		SelectedWorkspaceID: workspace.LocalWorkspaceID,
+		Workspaces: []workspace.Workspace{
+			{
+				ID:             workspace.LocalWorkspaceID,
+				Name:           workspace.LocalWorkspaceName,
+				SelectedRepoID: "repo-local",
+				Repos: []workspace.Repo{
+					{ID: "repo-local", Name: "local", Path: path, Health: workspace.RepoHealthy},
+				},
+			},
+		},
+	}
+}
+
+func localWorkspaceStateWithoutRepo() workspace.State {
+	return workspace.State{
+		SelectedWorkspaceID: workspace.LocalWorkspaceID,
+		Workspaces: []workspace.Workspace{
+			{
+				ID:   workspace.LocalWorkspaceID,
+				Name: workspace.LocalWorkspaceName,
+			},
+		},
+	}
+}
+
+type fakeRepoPathSubmitter struct {
+	result   RepoPathSubmissionResult
+	err      error
+	lastPath string
+	calls    int
+}
+
+func (f *fakeRepoPathSubmitter) SubmitRepoPath(_ context.Context, path string) (RepoPathSubmissionResult, error) {
+	f.calls++
+	f.lastPath = path
+	if f.err != nil {
+		return RepoPathSubmissionResult{}, f.err
+	}
+	return f.result, nil
 }

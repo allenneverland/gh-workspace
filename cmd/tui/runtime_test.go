@@ -160,6 +160,39 @@ func TestComposeRuntimeModel_LaunchFolder_GitPathReplacesLocalRepo(t *testing.T)
 	}
 }
 
+func TestComposeRuntimeModel_WiresRepoPathSubmitter(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv(envTestMode, "0")
+	t.Setenv(envStatePath, statePath)
+	seedRuntimeState(t, statePath, workspace.State{})
+
+	opts := LaunchOptions{Mode: LaunchFolder, Path: t.TempDir()}
+	model, closeFn, err := composeRuntimeModel(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("composeRuntimeModel(folder) error = %v", err)
+	}
+	if closeFn == nil {
+		t.Fatal("expected close function for persistent runtime model")
+	}
+	defer func() { _ = closeFn() }()
+
+	if model.RepoPathSubmitter == nil {
+		t.Fatal("expected repo path submitter to be wired in runtime model")
+	}
+
+	repoRoot := initTempGitRepo(t)
+	result, err := model.RepoPathSubmitter.SubmitRepoPath(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatalf("SubmitRepoPath() error = %v", err)
+	}
+	if got := currentRepoPathFromState(result.State); canonicalPath(t, got) != canonicalPath(t, repoRoot) {
+		t.Fatalf("expected submitter state to select repo path %q, got %q", repoRoot, got)
+	}
+	if result.StatusMessage == "" {
+		t.Fatal("expected submitter to return non-empty status message")
+	}
+}
+
 func TestComposeRuntimeModel_LaunchWorkspace_SelectsNamedWorkspace(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.db")
 	t.Setenv(envTestMode, "0")
@@ -277,4 +310,25 @@ func canonicalPath(t *testing.T, path string) string {
 		return filepath.Clean(abs)
 	}
 	return filepath.Clean(resolved)
+}
+
+func currentRepoPathFromState(state workspace.State) string {
+	workspaceID := state.SelectedWorkspaceID
+	if workspaceID == "" {
+		return ""
+	}
+	for _, ws := range state.Workspaces {
+		if ws.ID != workspaceID {
+			continue
+		}
+		if ws.SelectedRepoID == "" {
+			return ""
+		}
+		for _, repo := range ws.Repos {
+			if repo.ID == ws.SelectedRepoID {
+				return repo.Path
+			}
+		}
+	}
+	return ""
 }

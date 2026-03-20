@@ -110,6 +110,9 @@ func (m Model) renderLeftPane() string {
 	out.WriteString("\nworktree actions: create/switch")
 
 	out.WriteString("\na: add repo path")
+	if m.UIMode == ModeFolder && m.RepoPathInputActive {
+		out.WriteString("\nrepo path> " + m.RepoPathInput.Render())
+	}
 	if repo, ok := m.State.CurrentRepo(); ok && repo.Health == workspace.RepoInvalid {
 		out.WriteString("\nenter: fix path")
 		out.WriteString("\nx: remove repo")

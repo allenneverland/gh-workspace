@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
 
@@ -68,6 +70,18 @@ func TestView_FolderMode_EmptyState_ShowsGuidance(t *testing.T) {
 	assertContains(t, got, "current folder is not a git repo")
 	assertContains(t, got, "press a to add repo path")
 	assertContains(t, got, "-w <name>")
+}
+
+func TestView_FolderMode_RepoPathInput_ShowsPrompt(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+	m.RepoPathInputActive = true
+	_, _, _ = m.RepoPathInput.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("/tmp/new-repo"),
+	})
+
+	got := m.View()
+	assertContains(t, got, "repo path> /tmp/new-repo|")
 }
 
 func seededModelWithSystemAndUserWorkspaces() Model {
