@@ -8,6 +8,8 @@ type KeyMap struct {
 	AddRepo       key.Binding
 	SelectRepo    key.Binding
 	RemoveRepo    key.Binding
+	ManualRefresh key.Binding
+	TogglePolling key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -31,6 +33,14 @@ func DefaultKeyMap() KeyMap {
 		RemoveRepo: key.NewBinding(
 			key.WithKeys("x"),
 			key.WithHelp("x", "remove repo"),
+		),
+		ManualRefresh: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "refresh selected repo"),
+		),
+		TogglePolling: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "toggle auto polling"),
 		),
 	}
 }

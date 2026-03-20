@@ -9,6 +9,7 @@ import (
 	lazygitadapter "github.com/allenneverland/gh-workspace/internal/adapters/lazygit"
 	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
+	syncengine "github.com/allenneverland/gh-workspace/internal/sync"
 )
 
 type Tab string
@@ -47,6 +48,15 @@ type LazygitSessionManager interface {
 
 type DiffRenderer interface {
 	Render(ctx context.Context, repoPath string) (string, error)
+}
+
+type SyncEngine interface {
+	RefreshNow(ctx context.Context) (workspace.RepoStatus, error)
+	OnTick(ctx context.Context) (workspace.RepoStatus, error)
+	OnSelectionChanged(ctx context.Context, workspaceID, repoID string) (workspace.RepoStatus, error)
+	Start(ctx context.Context) tea.Cmd
+	SetAutoPolling(enabled bool)
+	AutoPollingEnabled() bool
 }
 
 type WorkspaceState struct {
@@ -293,6 +303,7 @@ type Model struct {
 	LazygitSessionID             string
 	LazygitCenterFrameText       string
 	DiffRenderer                 DiffRenderer
+	SyncEngine                   SyncEngine
 	DiffOutput                   string
 	DiffStatus                   string
 	DiffLoading                  bool
@@ -311,11 +322,17 @@ func NewModel(config Config) Model {
 		WorktreeAdapter:       appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
 		LazygitSessionManager: lazygitadapter.NewSessionManager(),
 		DiffRenderer:          diffadapter.NewRenderer(),
+		SyncEngine:            syncengine.NewEngine(noopStatusFetcher{}),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	if m.SyncEngine == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		return MsgSyncStartup{}
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -335,6 +352,12 @@ func (m Model) cloneForUpdate() Model {
 
 type appWorktreeAdapter struct {
 	inner *worktreeadapter.Adapter
+}
+
+type noopStatusFetcher struct{}
+
+func (noopStatusFetcher) FetchSelectedRepoStatus(context.Context, string, string) (workspace.RepoStatus, error) {
+	return workspace.RepoStatus{}, nil
 }
 
 func (a appWorktreeAdapter) Create(ctx context.Context, repoPath, branch, targetPath string) error {

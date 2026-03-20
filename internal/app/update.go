@@ -8,6 +8,7 @@ import (
 
 	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
+	syncengine "github.com/allenneverland/gh-workspace/internal/sync"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -16,6 +17,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MsgSelectWorkspace:
 		m.State.SelectWorkspace(msg.WorkspaceID)
+		m = syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
@@ -25,6 +27,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
+		m = syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
@@ -32,6 +35,13 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if m.ActiveTab == TabDiff {
 			return requestDiffRender(m)
 		}
+	case MsgSyncStartup:
+		m = syncOnSelectionChanged(m)
+		return m, scheduleSyncPolling(m)
+	case MsgRefreshSelectedRepo:
+		m = syncRefreshNow(m)
+	case MsgToggleAutoPolling:
+		return toggleAutoPolling(m)
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
@@ -71,6 +81,9 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		return scheduleLazygitFrameWait(m)
 	case MsgLazygitFrameClosed:
 		m.lazygitFrameListenerInFlight = false
+	case syncengine.MsgTick:
+		m = syncOnTick(m)
+		return m, scheduleSyncPolling(m)
 	case tea.KeyMsg:
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
@@ -89,10 +102,16 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.Keys.SelectRepo):
 			m = attemptRepoRecovery(m)
+		case key.Matches(msg, m.Keys.ManualRefresh):
+			return m, func() tea.Msg { return MsgRefreshSelectedRepo{} }
+		case key.Matches(msg, m.Keys.TogglePolling):
+			return m, func() tea.Msg { return MsgToggleAutoPolling{} }
 		case key.Matches(msg, m.Keys.NextWorkspace):
 			m.State.SelectNextWorkspace()
+			m = syncOnSelectionChanged(m)
 		case key.Matches(msg, m.Keys.PrevWorkspace):
 			m.State.SelectPrevWorkspace()
+			m = syncOnSelectionChanged(m)
 		}
 	}
 
@@ -161,6 +180,66 @@ func diffTabBlocksMutatingKeys(m Model, msg tea.KeyMsg) bool {
 		key.Matches(msg, m.Keys.SelectRepo) ||
 		key.Matches(msg, m.Keys.NextWorkspace) ||
 		key.Matches(msg, m.Keys.PrevWorkspace)
+}
+
+func syncOnSelectionChanged(m Model) Model {
+	if m.SyncEngine == nil {
+		return m
+	}
+
+	_, err := m.SyncEngine.OnSelectionChanged(
+		context.Background(),
+		m.State.CurrentWorkspaceID(),
+		m.State.CurrentRepoID(),
+	)
+	if err != nil {
+		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
+	}
+	return m
+}
+
+func syncRefreshNow(m Model) Model {
+	if m.SyncEngine == nil {
+		return m
+	}
+
+	_, err := m.SyncEngine.RefreshNow(context.Background())
+	if err != nil {
+		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
+	}
+	return m
+}
+
+func syncOnTick(m Model) Model {
+	if m.SyncEngine == nil {
+		return m
+	}
+
+	_, err := m.SyncEngine.OnTick(context.Background())
+	if err != nil {
+		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
+	}
+	return m
+}
+
+func scheduleSyncPolling(m Model) tea.Cmd {
+	if m.SyncEngine == nil || !m.SyncEngine.AutoPollingEnabled() {
+		return nil
+	}
+	return m.SyncEngine.Start(context.Background())
+}
+
+func toggleAutoPolling(m Model) (Model, tea.Cmd) {
+	if m.SyncEngine == nil {
+		return m, nil
+	}
+
+	enabled := !m.SyncEngine.AutoPollingEnabled()
+	m.SyncEngine.SetAutoPolling(enabled)
+	if !enabled {
+		return m, nil
+	}
+	return m, scheduleSyncPolling(m)
 }
 
 func requestDiffRender(m Model) (Model, tea.Cmd) {

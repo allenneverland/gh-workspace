@@ -37,3 +37,9 @@ type MsgDiffRendered struct {
 	Output    string
 	Err       error
 }
+
+type MsgSyncStartup struct{}
+
+type MsgRefreshSelectedRepo struct{}
+
+type MsgToggleAutoPolling struct{}
