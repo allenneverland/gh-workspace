@@ -285,8 +285,8 @@ type Model struct {
 	Worktrees              []WorktreeItem
 	LazygitSessionManager  LazygitSessionManager
 	LazygitSessionID       string
-	LazygitActiveRepoPath  string
 	LazygitCenterFrameText string
+	lazygitFrameListenerInFlight bool
 }
 
 func NewModel(config Config) Model {

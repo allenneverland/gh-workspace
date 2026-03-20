@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -97,6 +98,102 @@ func TestLazygitSessionManager_StartSession_PropagatesStarterError(t *testing.T)
 	_, err := manager.StartSession("/tmp/api")
 	if err == nil {
 		t.Fatal("expected start error")
+	}
+}
+
+func TestLazygitSessionManager_StartSession_ConcurrentSameRepoReturnsSingleSession(t *testing.T) {
+	var starts atomic.Int32
+	releaseStarter := make(chan struct{})
+
+	manager := newSessionManagerWithStarter(func(repoPath string) (*sessionProcess, error) {
+		starts.Add(1)
+		<-releaseStarter
+		return &sessionProcess{pty: newFakePTY()}, nil
+	})
+
+	const concurrentCalls = 12
+	var launchWG sync.WaitGroup
+	var doneWG sync.WaitGroup
+	results := make(chan SessionHandle, concurrentCalls)
+	errs := make(chan error, concurrentCalls)
+
+	launchWG.Add(concurrentCalls)
+	doneWG.Add(concurrentCalls)
+	for i := 0; i < concurrentCalls; i++ {
+		go func() {
+			defer doneWG.Done()
+			launchWG.Done()
+			handle, err := manager.StartSession("/tmp/api")
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- handle
+		}()
+	}
+
+	launchWG.Wait()
+	close(releaseStarter)
+	doneWG.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("expected no start error, got %v", err)
+		}
+	}
+
+	var first SessionHandle
+	count := 0
+	for handle := range results {
+		count++
+		if first.ID == "" {
+			first = handle
+			continue
+		}
+		if handle.ID != first.ID {
+			t.Fatalf("expected all concurrent starts to return same session id, got %q and %q", first.ID, handle.ID)
+		}
+	}
+	if count != concurrentCalls {
+		t.Fatalf("expected %d handles, got %d", concurrentCalls, count)
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("expected starter to run once for concurrent same-repo starts, got %d", got)
+	}
+}
+
+func TestLazygitSessionManager_ReaderOverflow_DropsOldestKeepsNewest(t *testing.T) {
+	pty := newFakePTY()
+	manager := newSessionManagerWithStarter(func(_ string) (*sessionProcess, error) {
+		return &sessionProcess{pty: pty}, nil
+	})
+	manager.frames = make(chan Frame, 1)
+
+	session, err := manager.StartSession("/tmp/api")
+	if err != nil {
+		t.Fatalf("expected start to succeed, got error: %v", err)
+	}
+
+	pty.emit("frame-old")
+	pty.emit("frame-new")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(manager.frames) < 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	select {
+	case frame := <-manager.Frames():
+		if frame.SessionID != session.ID {
+			t.Fatalf("expected frame session id %q, got %q", session.ID, frame.SessionID)
+		}
+		if got := string(frame.Data); got != "frame-new" {
+			t.Fatalf("expected overflow policy to keep newest frame %q, got %q", "frame-new", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for overflow frame")
 	}
 }
 

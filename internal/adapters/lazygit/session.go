@@ -29,12 +29,19 @@ type SessionManager struct {
 
 	sessionsByRepo map[string]*session
 	sessionsByID   map[string]*session
+	pendingByRepo  map[string]*pendingStart
 	frames         chan Frame
 }
 
 type session struct {
 	handle SessionHandle
 	proc   *sessionProcess
+}
+
+type pendingStart struct {
+	done   chan struct{}
+	handle SessionHandle
+	err    error
 }
 
 type sessionProcess struct {
@@ -51,6 +58,7 @@ func newSessionManagerWithStarter(start func(repoPath string) (*sessionProcess, 
 		start:          start,
 		sessionsByRepo: make(map[string]*session),
 		sessionsByID:   make(map[string]*session),
+		pendingByRepo:  make(map[string]*pendingStart),
 		frames:         make(chan Frame, 128),
 	}
 }
@@ -66,25 +74,35 @@ func (m *SessionManager) StartSession(repoPath string) (SessionHandle, error) {
 		m.mu.Unlock()
 		return handle, nil
 	}
+	if pending, ok := m.pendingByRepo[repoPath]; ok {
+		m.mu.Unlock()
+		<-pending.done
+		return pending.handle, pending.err
+	}
+	pending := &pendingStart{done: make(chan struct{})}
+	m.pendingByRepo[repoPath] = pending
 	m.mu.Unlock()
 
 	proc, err := m.start(repoPath)
-	if err != nil {
-		return SessionHandle{}, err
-	}
 
 	m.mu.Lock()
-	m.nextID++
-	handle := SessionHandle{
-		ID:       fmt.Sprintf("lazygit-%d", m.nextID),
-		RepoPath: repoPath,
+	delete(m.pendingByRepo, repoPath)
+	if err != nil {
+		pending.err = err
+		close(pending.done)
+		m.mu.Unlock()
+		return SessionHandle{}, err
 	}
+	m.nextID++
+	handle := SessionHandle{ID: fmt.Sprintf("lazygit-%d", m.nextID), RepoPath: repoPath}
 	s := &session{
 		handle: handle,
 		proc:   proc,
 	}
 	m.sessionsByRepo[repoPath] = s
 	m.sessionsByID[handle.ID] = s
+	pending.handle = handle
+	close(pending.done)
 	m.mu.Unlock()
 
 	go m.readLoop(s)
@@ -129,10 +147,7 @@ func (m *SessionManager) readLoop(s *session) {
 				SessionID: s.handle.ID,
 				Data:      append([]byte(nil), buf[:n]...),
 			}
-			select {
-			case m.frames <- frame:
-			default:
-			}
+			m.enqueueFrame(frame)
 		}
 
 		if err != nil {
@@ -142,6 +157,21 @@ func (m *SessionManager) readLoop(s *session) {
 			_ = s.proc.pty.Close()
 			m.removeSession(s)
 			return
+		}
+	}
+}
+
+func (m *SessionManager) enqueueFrame(frame Frame) {
+	for {
+		select {
+		case m.frames <- frame:
+			return
+		default:
+		}
+
+		select {
+		case <-m.frames:
+		default:
 		}
 	}
 }

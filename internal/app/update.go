@@ -15,19 +15,19 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		m.State.SelectWorkspace(msg.WorkspaceID)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
-			return m, waitForLazygitFrame(m.LazygitSessionManager)
+			return scheduleLazygitFrameWait(m)
 		}
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
-			return m, waitForLazygitFrame(m.LazygitSessionManager)
+			return scheduleLazygitFrameWait(m)
 		}
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
-			return m, waitForLazygitFrame(m.LazygitSessionManager)
+			return scheduleLazygitFrameWait(m)
 		}
 	case MsgRequestAddRepo:
 		m.AddRepoRequested = true
@@ -37,11 +37,17 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case MsgSwitchWorktree:
 		m = switchWorktree(m, msg)
 	case MsgLazygitFrame:
+		m.lazygitFrameListenerInFlight = false
 		if msg.SessionID == m.LazygitSessionID {
 			m.LazygitCenterFrameText += string(msg.Data)
 		}
-		return m, waitForLazygitFrame(m.LazygitSessionManager)
+		return scheduleLazygitFrameWait(m)
+	case MsgLazygitFrameClosed:
+		m.lazygitFrameListenerInFlight = false
 	case tea.KeyMsg:
+		if lazygitOwnsKeys(m) {
+			return forwardLazygitInput(m, msg), nil
+		}
 		switch {
 		case key.Matches(msg, m.Keys.AddRepo):
 			return m, func() tea.Msg { return MsgRequestAddRepo{} }
@@ -57,8 +63,6 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m.State.SelectNextWorkspace()
 		case key.Matches(msg, m.Keys.PrevWorkspace):
 			m.State.SelectPrevWorkspace()
-		default:
-			m = forwardLazygitInput(m, msg)
 		}
 	}
 
@@ -68,19 +72,19 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 func ensureLazygitSession(m Model) Model {
 	repo, ok := m.State.CurrentRepo()
 	if !ok {
-		m.LazygitSessionID = ""
-		m.LazygitActiveRepoPath = ""
-		m.LazygitCenterFrameText = ""
+		m = clearLazygitSessionState(m)
 		m.StatusMessage = "請先選擇 repo"
 		return m
 	}
 	if m.LazygitSessionManager == nil {
+		m = clearLazygitSessionState(m)
 		m.StatusMessage = "lazygit session manager unavailable"
 		return m
 	}
 
 	handle, err := m.LazygitSessionManager.StartSession(repo.Path)
 	if err != nil {
+		m = clearLazygitSessionState(m)
 		m.StatusMessage = "failed to start lazygit session: " + err.Error()
 		return m
 	}
@@ -89,8 +93,35 @@ func ensureLazygitSession(m Model) Model {
 		m.LazygitCenterFrameText = ""
 	}
 	m.LazygitSessionID = handle.ID
-	m.LazygitActiveRepoPath = handle.RepoPath
 	return m
+}
+
+func clearLazygitSessionState(m Model) Model {
+	m.LazygitSessionID = ""
+	m.LazygitCenterFrameText = ""
+	m.lazygitFrameListenerInFlight = false
+	return m
+}
+
+func scheduleLazygitFrameWait(m Model) (Model, tea.Cmd) {
+	if m.ActiveTab != TabLazygit || m.LazygitSessionManager == nil || m.LazygitSessionID == "" {
+		m.lazygitFrameListenerInFlight = false
+		return m, nil
+	}
+	if m.lazygitFrameListenerInFlight {
+		return m, nil
+	}
+
+	cmd := waitForLazygitFrame(m.LazygitSessionManager)
+	if cmd == nil {
+		return m, nil
+	}
+	m.lazygitFrameListenerInFlight = true
+	return m, cmd
+}
+
+func lazygitOwnsKeys(m Model) bool {
+	return m.ActiveTab == TabLazygit && m.LazygitSessionManager != nil && m.LazygitSessionID != ""
 }
 
 func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
@@ -105,7 +136,7 @@ func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
 	return func() tea.Msg {
 		frame, ok := <-frames
 		if !ok {
-			return nil
+			return MsgLazygitFrameClosed{}
 		}
 		return MsgLazygitFrame{
 			SessionID: frame.SessionID,

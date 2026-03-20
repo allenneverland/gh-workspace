@@ -1,6 +1,8 @@
 package app
 
 import (
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,6 +88,101 @@ func TestUpdate_KeyMsg_LazygitTab_ForwardsInputToSession(t *testing.T) {
 	}
 }
 
+func TestUpdate_KeyMsg_LazygitTab_WithSession_PrioritizesPTYOverAppBindings(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	tabModel := enteredTab.(Model)
+
+	afterKey, cmd := tabModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got := afterKey.(Model)
+
+	if got.AddRepoRequested {
+		t.Fatal("expected lazygit tab key ownership to prevent add-repo action")
+	}
+	if len(manager.writeCalls) != 1 {
+		t.Fatalf("expected key to forward to PTY, got %d writes", len(manager.writeCalls))
+	}
+	if payload := string(manager.writeCalls[0].data); payload != "a" {
+		t.Fatalf("expected forwarded payload %q, got %q", "a", payload)
+	}
+	if cmd != nil {
+		if _, ok := cmd().(MsgRequestAddRepo); ok {
+			t.Fatal("expected no add-repo command while lazygit owns keys")
+		}
+	}
+}
+
+func TestUpdate_LazygitTab_DoesNotAccumulateFrameListeners(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	manager.sessionsByRepo["/tmp/web"] = LazygitSessionHandle{
+		ID:       "session-web",
+		RepoPath: "/tmp/web",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, firstCmd := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	first := enteredTab.(Model)
+	if firstCmd == nil {
+		t.Fatal("expected first frame wait command")
+	}
+	if got := atomic.LoadInt32(&manager.framesCalls); got != 1 {
+		t.Fatalf("expected one frame subscription, got %d", got)
+	}
+
+	switchedRepo, secondCmd := first.Update(MsgSelectRepo{RepoID: "repo-2"})
+	second := switchedRepo.(Model)
+	if secondCmd != nil {
+		t.Fatal("expected no extra frame wait command while one is already in flight")
+	}
+	if got := atomic.LoadInt32(&manager.framesCalls); got != 1 {
+		t.Fatalf("expected frame subscription count to remain 1, got %d", got)
+	}
+	if !second.lazygitFrameListenerInFlight {
+		t.Fatal("expected listener in-flight flag to remain set before frame delivery")
+	}
+}
+
+func TestUpdate_LazygitTab_StartFailure_ClearsSessionState(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.startErrByRepo["/tmp/api"] = errors.New("boom")
+	m.LazygitSessionManager = manager
+	m.ActiveTab = TabLazygit
+	m.LazygitSessionID = "stale-session"
+	m.LazygitCenterFrameText = "stale-frame"
+
+	updated, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	got := updated.(Model)
+
+	if got.LazygitSessionID != "" {
+		t.Fatalf("expected session id cleared on start failure, got %q", got.LazygitSessionID)
+	}
+	if got.LazygitCenterFrameText != "" {
+		t.Fatalf("expected frame text cleared on start failure, got %q", got.LazygitCenterFrameText)
+	}
+
+	afterKey, _ := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	final := afterKey.(Model)
+	if len(manager.writeCalls) != 0 {
+		t.Fatalf("expected no PTY writes after failed start, got %d", len(manager.writeCalls))
+	}
+	if final.StatusMessage == "" {
+		t.Fatal("expected status message after failed lazygit start")
+	}
+}
+
 func TestUpdate_LazygitFrameMessage_RendersInView(t *testing.T) {
 	m := seededModelWithRepos()
 	manager := newFakeLazygitSessionManager()
@@ -124,8 +221,10 @@ type fakeLazygitSessionManager struct {
 	startCalls []string
 	writeCalls []lazygitWriteCall
 
+	startErrByRepo map[string]error
 	sessionsByRepo map[string]LazygitSessionHandle
 	frames         chan LazygitFrame
+	framesCalls    int32
 }
 
 type lazygitWriteCall struct {
@@ -135,6 +234,7 @@ type lazygitWriteCall struct {
 
 func newFakeLazygitSessionManager() *fakeLazygitSessionManager {
 	return &fakeLazygitSessionManager{
+		startErrByRepo: make(map[string]error),
 		sessionsByRepo: make(map[string]LazygitSessionHandle),
 		frames:         make(chan LazygitFrame, 8),
 	}
@@ -142,6 +242,9 @@ func newFakeLazygitSessionManager() *fakeLazygitSessionManager {
 
 func (f *fakeLazygitSessionManager) StartSession(repoPath string) (LazygitSessionHandle, error) {
 	f.startCalls = append(f.startCalls, repoPath)
+	if err, ok := f.startErrByRepo[repoPath]; ok {
+		return LazygitSessionHandle{}, err
+	}
 	session, ok := f.sessionsByRepo[repoPath]
 	if ok {
 		return session, nil
@@ -164,5 +267,6 @@ func (f *fakeLazygitSessionManager) WriteInput(sessionID string, input []byte) e
 }
 
 func (f *fakeLazygitSessionManager) Frames() <-chan LazygitFrame {
+	atomic.AddInt32(&f.framesCalls, 1)
 	return f.frames
 }

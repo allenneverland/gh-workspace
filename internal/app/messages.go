@@ -27,3 +27,5 @@ type MsgLazygitFrame struct {
 	SessionID string
 	Data      []byte
 }
+
+type MsgLazygitFrameClosed struct{}
