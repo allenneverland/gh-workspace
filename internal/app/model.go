@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	tea "github.com/charmbracelet/bubbletea"
 
+	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
 
@@ -14,6 +16,12 @@ const (
 
 type Config struct {
 	InitialState workspace.State
+}
+
+type WorktreeAdapter interface {
+	Create(ctx context.Context, repoPath, branch, targetPath string) error
+	List(ctx context.Context, repoPath string) ([]worktreeadapter.Entry, error)
+	ValidateSwitchTarget(ctx context.Context, worktreePath string) error
 }
 
 type WorkspaceState struct {
@@ -231,14 +239,18 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 }
 
 type Model struct {
-	ActiveTab        Tab
-	LeftPaneWidth    int
-	CenterPaneWidth  int
-	RightPaneWidth   int
-	State            WorkspaceState
-	Keys             KeyMap
-	AddRepoRequested bool
-	StatusMessage    string
+	ActiveTab            Tab
+	LeftPaneWidth        int
+	CenterPaneWidth      int
+	RightPaneWidth       int
+	State                WorkspaceState
+	Keys                 KeyMap
+	AddRepoRequested     bool
+	StatusMessage        string
+	WorktreeAdapter      WorktreeAdapter
+	Worktrees            []worktreeadapter.Entry
+	SelectedWorktreeID   string
+	SelectedWorktreePath string
 }
 
 func NewModel(config Config) Model {
@@ -249,6 +261,7 @@ func NewModel(config Config) Model {
 		RightPaneWidth:  40,
 		State:           NewWorkspaceState(config.InitialState),
 		Keys:            DefaultKeyMap(),
+		WorktreeAdapter: worktreeadapter.NewAdapter(nil),
 	}
 }
 

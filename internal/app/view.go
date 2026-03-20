@@ -37,6 +37,31 @@ func (m Model) renderLeftPane() string {
 		}
 	}
 
+	out.WriteString("\nWorktrees\n")
+	if len(m.Worktrees) == 0 {
+		out.WriteString("  (none)\n")
+	} else {
+		for _, wt := range m.Worktrees {
+			marker := "  "
+			if wt.ID == m.SelectedWorktreeID || wt.Path == m.SelectedWorktreePath {
+				marker = "> "
+			}
+			label := wt.ID
+			if label == "" {
+				label = wt.Path
+			}
+			if wt.Branch != "" {
+				label += " (" + wt.Branch + ")"
+			}
+			out.WriteString(marker + label + "\n")
+		}
+	}
+
+	if m.SelectedWorktreePath != "" {
+		out.WriteString("\nselected worktree: " + m.SelectedWorktreePath)
+	}
+	out.WriteString("\nworktree actions: create/switch")
+
 	out.WriteString("\na: add repo path")
 	if repo, ok := m.State.CurrentRepo(); ok && repo.Health == workspace.RepoInvalid {
 		out.WriteString("\nenter: fix path")
