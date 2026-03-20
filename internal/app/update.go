@@ -9,31 +9,26 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type MsgSelectWorkspace struct {
-	WorkspaceID string
-}
-
-type MsgSelectRepo struct {
-	RepoID string
-}
-
-type MsgRequestAddRepo struct{}
-
-type MsgCreateWorktree struct {
-	Branch string
-	Path   string
-}
-
-type MsgSwitchWorktree struct {
-	WorktreePath string
-}
-
 func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MsgSelectWorkspace:
 		m.State.SelectWorkspace(msg.WorkspaceID)
+		if m.ActiveTab == TabLazygit {
+			m = ensureLazygitSession(m)
+			return m, waitForLazygitFrame(m.LazygitSessionManager)
+		}
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
+		if m.ActiveTab == TabLazygit {
+			m = ensureLazygitSession(m)
+			return m, waitForLazygitFrame(m.LazygitSessionManager)
+		}
+	case MsgSetActiveTab:
+		m.ActiveTab = msg.Tab
+		if m.ActiveTab == TabLazygit {
+			m = ensureLazygitSession(m)
+			return m, waitForLazygitFrame(m.LazygitSessionManager)
+		}
 	case MsgRequestAddRepo:
 		m.AddRepoRequested = true
 		m.StatusMessage = "add repo requested"
@@ -41,6 +36,11 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		m = createWorktree(m, msg)
 	case MsgSwitchWorktree:
 		m = switchWorktree(m, msg)
+	case MsgLazygitFrame:
+		if msg.SessionID == m.LazygitSessionID {
+			m.LazygitCenterFrameText += string(msg.Data)
+		}
+		return m, waitForLazygitFrame(m.LazygitSessionManager)
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.Keys.AddRepo):
@@ -57,10 +57,105 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m.State.SelectNextWorkspace()
 		case key.Matches(msg, m.Keys.PrevWorkspace):
 			m.State.SelectPrevWorkspace()
+		default:
+			m = forwardLazygitInput(m, msg)
 		}
 	}
 
 	return m, nil
+}
+
+func ensureLazygitSession(m Model) Model {
+	repo, ok := m.State.CurrentRepo()
+	if !ok {
+		m.LazygitSessionID = ""
+		m.LazygitActiveRepoPath = ""
+		m.LazygitCenterFrameText = ""
+		m.StatusMessage = "請先選擇 repo"
+		return m
+	}
+	if m.LazygitSessionManager == nil {
+		m.StatusMessage = "lazygit session manager unavailable"
+		return m
+	}
+
+	handle, err := m.LazygitSessionManager.StartSession(repo.Path)
+	if err != nil {
+		m.StatusMessage = "failed to start lazygit session: " + err.Error()
+		return m
+	}
+
+	if m.LazygitSessionID != handle.ID {
+		m.LazygitCenterFrameText = ""
+	}
+	m.LazygitSessionID = handle.ID
+	m.LazygitActiveRepoPath = handle.RepoPath
+	return m
+}
+
+func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
+	if manager == nil {
+		return nil
+	}
+	frames := manager.Frames()
+	if frames == nil {
+		return nil
+	}
+
+	return func() tea.Msg {
+		frame, ok := <-frames
+		if !ok {
+			return nil
+		}
+		return MsgLazygitFrame{
+			SessionID: frame.SessionID,
+			Data:      frame.Data,
+		}
+	}
+}
+
+func forwardLazygitInput(m Model, msg tea.KeyMsg) Model {
+	if m.ActiveTab != TabLazygit {
+		return m
+	}
+	if m.LazygitSessionManager == nil || m.LazygitSessionID == "" {
+		return m
+	}
+
+	input, ok := keyMsgToBytes(msg)
+	if !ok {
+		return m
+	}
+
+	if err := m.LazygitSessionManager.WriteInput(m.LazygitSessionID, input); err != nil {
+		m.StatusMessage = "failed to write lazygit input: " + err.Error()
+	}
+	return m
+}
+
+func keyMsgToBytes(msg tea.KeyMsg) ([]byte, bool) {
+	switch msg.Type {
+	case tea.KeyRunes:
+		return []byte(string(msg.Runes)), true
+	case tea.KeyEnter:
+		return []byte{'\r'}, true
+	case tea.KeyBackspace:
+		return []byte{0x7f}, true
+	case tea.KeySpace:
+		return []byte{' '}, true
+	case tea.KeyTab:
+		return []byte{'\t'}, true
+	case tea.KeyUp:
+		return []byte("\x1b[A"), true
+	case tea.KeyDown:
+		return []byte("\x1b[B"), true
+	case tea.KeyRight:
+		return []byte("\x1b[C"), true
+	case tea.KeyLeft:
+		return []byte("\x1b[D"), true
+	default:
+		return nil, false
+	}
 }
 
 func createWorktree(m Model, msg MsgCreateWorktree) Model {

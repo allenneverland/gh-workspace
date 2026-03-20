@@ -7,7 +7,15 @@ import (
 )
 
 func renderView(m Model) string {
-	return m.renderLeftPane()
+	var out strings.Builder
+	out.WriteString(m.renderLeftPane())
+	out.WriteString("\n\nCenter")
+	out.WriteString("\nactive tab: " + string(m.ActiveTab))
+	if m.ActiveTab == TabLazygit {
+		out.WriteString("\n")
+		out.WriteString(m.renderLazygitCenter())
+	}
+	return out.String()
 }
 
 func (m Model) renderLeftPane() string {
@@ -78,4 +86,15 @@ func (m Model) renderLeftPane() string {
 	}
 
 	return out.String()
+}
+
+func (m Model) renderLazygitCenter() string {
+	repo, ok := m.State.CurrentRepo()
+	if !ok || repo.ID == "" {
+		return "請先選擇 repo"
+	}
+	if m.LazygitCenterFrameText == "" {
+		return "Lazygit 啟動中..."
+	}
+	return m.LazygitCenterFrameText
 }

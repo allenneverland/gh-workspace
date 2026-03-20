@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	lazygitadapter "github.com/allenneverland/gh-workspace/internal/adapters/lazygit"
 	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
@@ -13,6 +14,7 @@ type Tab string
 
 const (
 	TabOverview Tab = "overview"
+	TabLazygit  Tab = "lazygit"
 )
 
 type Config struct {
@@ -30,6 +32,15 @@ type WorktreeAdapter interface {
 	Create(ctx context.Context, repoPath, branch, targetPath string) error
 	List(ctx context.Context, repoPath string) ([]WorktreeItem, error)
 	ValidateSwitchTarget(ctx context.Context, worktreePath string) error
+}
+
+type LazygitSessionHandle = lazygitadapter.SessionHandle
+type LazygitFrame = lazygitadapter.Frame
+
+type LazygitSessionManager interface {
+	StartSession(repoPath string) (LazygitSessionHandle, error)
+	WriteInput(sessionID string, input []byte) error
+	Frames() <-chan LazygitFrame
 }
 
 type WorkspaceState struct {
@@ -262,27 +273,32 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 }
 
 type Model struct {
-	ActiveTab        Tab
-	LeftPaneWidth    int
-	CenterPaneWidth  int
-	RightPaneWidth   int
-	State            WorkspaceState
-	Keys             KeyMap
-	AddRepoRequested bool
-	StatusMessage    string
-	WorktreeAdapter  WorktreeAdapter
-	Worktrees        []WorktreeItem
+	ActiveTab              Tab
+	LeftPaneWidth          int
+	CenterPaneWidth        int
+	RightPaneWidth         int
+	State                  WorkspaceState
+	Keys                   KeyMap
+	AddRepoRequested       bool
+	StatusMessage          string
+	WorktreeAdapter        WorktreeAdapter
+	Worktrees              []WorktreeItem
+	LazygitSessionManager  LazygitSessionManager
+	LazygitSessionID       string
+	LazygitActiveRepoPath  string
+	LazygitCenterFrameText string
 }
 
 func NewModel(config Config) Model {
 	return Model{
-		ActiveTab:       TabOverview,
-		LeftPaneWidth:   30,
-		CenterPaneWidth: 80,
-		RightPaneWidth:  40,
-		State:           NewWorkspaceState(config.InitialState),
-		Keys:            DefaultKeyMap(),
-		WorktreeAdapter: appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
+		ActiveTab:             TabOverview,
+		LeftPaneWidth:         30,
+		CenterPaneWidth:       80,
+		RightPaneWidth:        40,
+		State:                 NewWorkspaceState(config.InitialState),
+		Keys:                  DefaultKeyMap(),
+		WorktreeAdapter:       appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
+		LazygitSessionManager: lazygitadapter.NewSessionManager(),
 	}
 }
 
