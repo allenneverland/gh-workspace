@@ -389,19 +389,20 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 			Release: workspace.StatusUnconfigured,
 		}
 	}
+	hasReleaseWorkflow := strings.TrimSpace(repo.ReleaseWorkflowRef) != ""
 
 	snapshot := RepoStatusSnapshot{
 		PR:      workspace.StatusNeutral,
 		CI:      workspace.StatusNeutral,
 		Release: workspace.StatusNeutral,
 	}
-	if strings.TrimSpace(repo.ReleaseWorkflowRef) == "" {
-		snapshot.Release = workspace.StatusUnconfigured
-	}
 
 	key := repoStatusSnapshotKey(m.State.CurrentWorkspaceID(), repo.ID)
 	stored, ok := m.RepoStatusSnapshots[key]
 	if !ok {
+		if !hasReleaseWorkflow {
+			snapshot.Release = workspace.StatusUnconfigured
+		}
 		return snapshot
 	}
 
@@ -417,6 +418,9 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	snapshot.LastSyncedAt = stored.LastSyncedAt
 	snapshot.IsStale = stored.IsStale
 	snapshot.LatestError = stored.LatestError
+	if !hasReleaseWorkflow {
+		snapshot.Release = workspace.StatusUnconfigured
+	}
 	return snapshot
 }
 

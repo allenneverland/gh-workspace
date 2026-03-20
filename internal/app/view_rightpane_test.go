@@ -16,6 +16,32 @@ func TestRightPane_RendersUnconfiguredRelease(t *testing.T) {
 	assertContains(t, out, "release: unconfigured")
 }
 
+func TestRightPane_UnconfiguredReleasePrecedence_OverridesStoredSnapshot(t *testing.T) {
+	tests := []workspace.Status{
+		workspace.StatusSuccess,
+		workspace.StatusFailure,
+	}
+
+	for _, storedRelease := range tests {
+		t.Run(string(storedRelease), func(t *testing.T) {
+			m := seededModelWithRepos()
+			m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ""
+			m.RepoStatusSnapshots = map[string]RepoStatusSnapshot{
+				repoStatusSnapshotKey("ws-1", "repo-1"): {
+					Release: storedRelease,
+				},
+			}
+
+			out := m.View()
+
+			assertContains(t, out, "release: unconfigured")
+			if strings.Contains(out, "release: "+string(storedRelease)) {
+				t.Fatalf("expected unconfigured precedence over stored release %q, got:\n%s", storedRelease, out)
+			}
+		})
+	}
+}
+
 func TestRightPane_RendersStatusAndLastSyncedAt(t *testing.T) {
 	m := seededModelWithRepos()
 	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
