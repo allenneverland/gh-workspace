@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,6 +51,66 @@ func TestResolver_ResolveRepoRoot_MissingPathReturnsNotFoundWithoutError(t *test
 	resolved, ok, err := ResolveRepoRoot(context.Background(), path)
 	if err != nil {
 		t.Fatalf("ResolveRepoRoot() error = %v", err)
+	}
+	if ok {
+		t.Fatal("ResolveRepoRoot() ok = true, want false")
+	}
+	if resolved != "" {
+		t.Fatalf("ResolveRepoRoot() = %q, want empty string", resolved)
+	}
+}
+
+func TestResolver_ResolveRepoRoot_WhitespacePathReturnsNotFoundWithoutError(t *testing.T) {
+	resolved, ok, err := ResolveRepoRoot(context.Background(), " \n\t ")
+	if err != nil {
+		t.Fatalf("ResolveRepoRoot() error = %v", err)
+	}
+	if ok {
+		t.Fatal("ResolveRepoRoot() ok = true, want false")
+	}
+	if resolved != "" {
+		t.Fatalf("ResolveRepoRoot() = %q, want empty string", resolved)
+	}
+}
+
+func TestResolver_ResolveRepoRoot_CanceledContextReturnsError(t *testing.T) {
+	root := initTempGitRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	resolved, ok, err := ResolveRepoRoot(ctx, root)
+	if err == nil {
+		t.Fatal("ResolveRepoRoot() error = nil, want context cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveRepoRoot() error = %v, want context canceled", err)
+	}
+	if ok {
+		t.Fatal("ResolveRepoRoot() ok = true, want false")
+	}
+	if resolved != "" {
+		t.Fatalf("ResolveRepoRoot() = %q, want empty string", resolved)
+	}
+}
+
+func TestResolver_ResolveRepoRoot_MissingGitBinaryReturnsError(t *testing.T) {
+	originalCommandContext := commandContext
+	commandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, "definitely-missing-git-binary-for-resolver-test")
+		cmd.Env = []string{"PATH=/__resolver_missing_path__"}
+		return cmd
+	}
+	t.Cleanup(func() {
+		commandContext = originalCommandContext
+	})
+
+	resolved, ok, err := ResolveRepoRoot(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("ResolveRepoRoot() error = nil, want exec launch error")
+	}
+	var execErr *exec.Error
+	if !errors.As(err, &execErr) {
+		t.Fatalf("ResolveRepoRoot() error = %T %v, want *exec.Error", err, err)
 	}
 	if ok {
 		t.Fatal("ResolveRepoRoot() ok = true, want false")
