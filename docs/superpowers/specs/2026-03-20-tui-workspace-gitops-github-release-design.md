@@ -29,6 +29,7 @@ v1 採「端到端最小骨架」策略，先打通完整流程：
 - Release 顯示位置：右側 Pane，且僅顯示「當前選中 repo」狀態
 - 更新策略：手動 refresh + 自動輪詢（預設啟用，可關閉）
 - GitHub 認證：只重用 `gh auth`（不做內建 OAuth）
+- PR 建立路徑：v1 僅透過 `Lazygit`（或其 custom command 觸發 `gh`）；不做原生 PR 表單
 
 ## 3. 非目標（v1 明確不做）
 
@@ -69,7 +70,7 @@ v1 採「端到端最小骨架」策略，先打通完整流程：
   - `Overview`：目前 repo 的摘要、近期活動與入口
   - `Worktrees`：worktree 清單與建立/切換操作
   - `Lazygit`：內嵌 lazygit（同一 TUI 內，不跳出）
-  - `Diff`：delta 呈現差異（命令/視圖整合）
+  - `Diff`：唯讀 diff 視圖，使用 `delta` 呈現當前 repo/worktree 差異
 - Right Pane：當前 repo 的 `PR / CI / Release` 狀態
 
 ### 5.2 Lazygit Tab 行為
@@ -77,6 +78,18 @@ v1 採「端到端最小骨架」策略，先打通完整流程：
 - 有選 repo：啟動或重用該 repo 的 lazygit PTY session
 - 無選 repo：顯示「請先選擇 repo」
 - session 還原：best-effort（v1）
+
+### 5.3 PR 建立行為（v1 邊界）
+
+- v1 不提供原生 PR 建立表單
+- PR 建立由 `Lazygit` Tab 內流程完成（含 lazygit 既有能力或呼叫 `gh` custom command）
+- App 只負責觀測 PR/CI/Release 狀態，不改寫 PR 建立 UX
+
+### 5.4 Diff 行為（v1 邊界）
+
+- `Diff` Tab 只做唯讀顯示，不做 hunk 編輯/stage 互動
+- 只針對當前選中 repo/worktree 執行 diff
+- 呈現來源固定為 `git diff` 管線至 `delta`，不自建差異演算法
 
 ## 6. 資料模型（v1）
 
@@ -110,15 +123,22 @@ v1 採「端到端最小骨架」策略，先打通完整流程：
 
 1. 啟動：讀本地持久化 -> 還原上次 workspace/repo -> 啟動輪詢器  
 2. 使用者操作：選 workspace/repo -> 切 Center Tab -> 執行 worktree/lazygit/diff  
-3. 手動 refresh：立即觸發 GitHub 同步  
-4. 自動輪詢：定期更新 PR/CI/Release  
+3. 手動 refresh：立即觸發「當前選中 repo」GitHub 同步  
+4. 自動輪詢：僅輪詢「當前選中 repo」的 PR/CI/Release  
 5. 同步結果：寫入 Store -> UI 重繪 -> Right Pane 更新  
+6. 切換 repo：立即觸發一次新 repo 的同步，再進入週期輪詢  
 
 Release 追蹤規則（v1）：
 
-- 以 repo 預設分支為主
-- 追蹤該分支最新 release workflow 狀態
+- 每個 repo 需在設定中提供 `releaseWorkflowRef`（workflow 檔名或 workflow id）
+- 以 `releaseWorkflowRef` 對應到單一 workflow，避免多 workflow 歧義
+- 追蹤該 workflow 在 repo 預設分支脈絡下的最新執行狀態（`queued/in_progress/success/failure`）
 - 不因 PR merge 完成而停止追蹤 publish
+
+若 repo 未設定 `releaseWorkflowRef`：
+
+- release 狀態顯示 `unconfigured`
+- 提示使用者補上 workflow 設定
 
 ## 8. 錯誤處理
 
@@ -126,6 +146,7 @@ Release 追蹤規則（v1）：
 - GitHub API 暫時失敗/rate limit：保留最後成功快照，標記 `stale`，下輪自動重試
 - lazygit 不存在或啟動失敗：在 Lazygit Tab 顯示修復提示，不影響其他功能
 - repo 路徑失效：在清單標記異常，提供移除或修正路徑
+- repo 缺少 `releaseWorkflowRef`：Right Pane 顯示 `unconfigured` 並提供設定入口提示
 
 ## 9. 測試策略
 
@@ -151,4 +172,3 @@ Release 追蹤規則（v1）：
 - 更完整 lazygit session 還原
 - publish 類型擴充（deploy/package）
 - Windows 支援
-
