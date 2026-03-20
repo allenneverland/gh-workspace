@@ -45,6 +45,192 @@ func (s *Service) LoadState() (State, error) {
 	return s.store.Load(context.Background())
 }
 
+func (s *Service) EnsureLocalWorkspace() (Workspace, error) {
+	if err := s.EnsureLocalWorkspaceIntegrity(); err != nil {
+		return Workspace{}, err
+	}
+
+	state, err := s.LoadState()
+	if err != nil {
+		return Workspace{}, err
+	}
+
+	for _, ws := range state.Workspaces {
+		if isCanonicalLocalWorkspace(ws) {
+			return ws, nil
+		}
+	}
+
+	now := time.Now().UTC()
+	workspace := Workspace{
+		ID:        LocalWorkspaceID,
+		Name:      LocalWorkspaceName,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	state.Workspaces = append(state.Workspaces, workspace)
+	if state.SelectedWorkspaceID == "" {
+		state.SelectedWorkspaceID = workspace.ID
+	}
+
+	if err := s.store.Save(context.Background(), state); err != nil {
+		return Workspace{}, err
+	}
+	return workspace, nil
+}
+
+func (s *Service) ReplaceLocalRepo(input RepoInput) (Repo, error) {
+	if strings.TrimSpace(input.Name) == "" {
+		return Repo{}, ErrRepoNameMissing
+	}
+	if strings.TrimSpace(input.Path) == "" {
+		return Repo{}, ErrRepoPathMissing
+	}
+
+	if _, err := s.EnsureLocalWorkspace(); err != nil {
+		return Repo{}, err
+	}
+
+	state, err := s.LoadState()
+	if err != nil {
+		return Repo{}, err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, LocalWorkspaceID)
+	if workspaceIdx < 0 {
+		return Repo{}, fmt.Errorf("%w: %s", ErrWorkspaceNotFound, LocalWorkspaceID)
+	}
+
+	repo := Repo{
+		ID:                 newID("repo"),
+		Name:               input.Name,
+		Path:               input.Path,
+		DefaultBranch:      input.DefaultBranch,
+		ReleaseWorkflowRef: input.ReleaseWorkflowRef,
+		Health:             RepoHealthy,
+	}
+	state.Workspaces[workspaceIdx].Repos = []Repo{repo}
+	state.Workspaces[workspaceIdx].SelectedRepoID = repo.ID
+	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
+	state.SelectedWorkspaceID = LocalWorkspaceID
+
+	if err := s.store.Save(context.Background(), state); err != nil {
+		return Repo{}, err
+	}
+	return repo, nil
+}
+
+func (s *Service) ClearLocalRepos() error {
+	if _, err := s.EnsureLocalWorkspace(); err != nil {
+		return err
+	}
+
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, LocalWorkspaceID)
+	if workspaceIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, LocalWorkspaceID)
+	}
+
+	state.Workspaces[workspaceIdx].Repos = nil
+	state.Workspaces[workspaceIdx].SelectedRepoID = ""
+	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
+	state.SelectedWorkspaceID = LocalWorkspaceID
+	return s.store.Save(context.Background(), state)
+}
+
+func (s *Service) FindWorkspaceByName(name string, includeSystem bool) (Workspace, bool, error) {
+	state, err := s.LoadState()
+	if err != nil {
+		return Workspace{}, false, err
+	}
+
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return Workspace{}, false, nil
+	}
+
+	for _, ws := range state.Workspaces {
+		if ws.Name != target {
+			continue
+		}
+		if !includeSystem && collidesWithLocalWorkspace(ws) {
+			continue
+		}
+		return ws, true, nil
+	}
+	return Workspace{}, false, nil
+}
+
+func (s *Service) EnsureLocalWorkspaceIntegrity() error {
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	canonicalIdx := -1
+	for i := range state.Workspaces {
+		if isCanonicalLocalWorkspace(state.Workspaces[i]) {
+			canonicalIdx = i
+			break
+		}
+	}
+
+	usedIDs := make(map[string]struct{}, len(state.Workspaces)+1)
+	usedNames := make(map[string]struct{}, len(state.Workspaces)+1)
+	for _, ws := range state.Workspaces {
+		usedIDs[ws.ID] = struct{}{}
+		usedNames[ws.Name] = struct{}{}
+	}
+	usedIDs[LocalWorkspaceID] = struct{}{}
+	usedNames[LocalWorkspaceName] = struct{}{}
+
+	changed := false
+	for i := range state.Workspaces {
+		if i == canonicalIdx {
+			continue
+		}
+
+		ws := state.Workspaces[i]
+		if !collidesWithLocalWorkspace(ws) {
+			continue
+		}
+
+		base := localWorkspaceLegacyBase(ws)
+		candidate := ""
+		for suffix := 1; ; suffix++ {
+			next := localWorkspaceLegacyName(base, suffix)
+			if _, exists := usedIDs[next]; exists {
+				continue
+			}
+			if _, exists := usedNames[next]; exists {
+				continue
+			}
+			candidate = next
+			break
+		}
+
+		oldID := state.Workspaces[i].ID
+		state.Workspaces[i].ID = candidate
+		state.Workspaces[i].Name = candidate
+		state.Workspaces[i].UpdatedAt = time.Now().UTC()
+		if state.SelectedWorkspaceID == oldID {
+			state.SelectedWorkspaceID = candidate
+		}
+		usedIDs[candidate] = struct{}{}
+		usedNames[candidate] = struct{}{}
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+	return s.store.Save(context.Background(), state)
+}
+
 func (s *Service) CreateWorkspace(name string) (Workspace, error) {
 	if strings.TrimSpace(name) == "" {
 		return Workspace{}, ErrWorkspaceNameMissing
