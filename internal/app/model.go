@@ -21,9 +21,20 @@ type WorkspaceState struct {
 }
 
 func NewWorkspaceState(st workspace.State) WorkspaceState {
-	state := WorkspaceState{Snapshot: st}
+	state := WorkspaceState{Snapshot: cloneWorkspaceState(st)}
 	state.ensureSelection()
 	return state
+}
+
+func cloneWorkspaceState(st workspace.State) workspace.State {
+	cloned := st
+	cloned.Workspaces = make([]workspace.Workspace, len(st.Workspaces))
+	for i := range st.Workspaces {
+		ws := st.Workspaces[i]
+		ws.Repos = append([]workspace.Repo(nil), ws.Repos...)
+		cloned.Workspaces[i] = ws
+	}
+	return cloned
 }
 
 func (s WorkspaceState) CurrentWorkspaceID() string {
@@ -124,6 +135,39 @@ func (s *WorkspaceState) SelectPrevWorkspace() bool {
 	return true
 }
 
+func (s *WorkspaceState) RemoveCurrentRepo() (workspace.Repo, bool) {
+	workspaceIdx, repoIdx := s.currentIndexes()
+	if workspaceIdx < 0 || repoIdx < 0 {
+		return workspace.Repo{}, false
+	}
+
+	removed := s.Snapshot.Workspaces[workspaceIdx].Repos[repoIdx]
+	s.Snapshot.Workspaces[workspaceIdx].Repos = append(
+		s.Snapshot.Workspaces[workspaceIdx].Repos[:repoIdx],
+		s.Snapshot.Workspaces[workspaceIdx].Repos[repoIdx+1:]...,
+	)
+	repos := s.Snapshot.Workspaces[workspaceIdx].Repos
+	if len(repos) == 0 {
+		s.Snapshot.Workspaces[workspaceIdx].SelectedRepoID = ""
+	} else if repoIdx >= len(repos) {
+		s.Snapshot.Workspaces[workspaceIdx].SelectedRepoID = repos[len(repos)-1].ID
+	} else {
+		s.Snapshot.Workspaces[workspaceIdx].SelectedRepoID = repos[repoIdx].ID
+	}
+
+	return removed, true
+}
+
+func (s *WorkspaceState) SetCurrentRepoHealth(health workspace.RepoHealth) bool {
+	workspaceIdx, repoIdx := s.currentIndexes()
+	if workspaceIdx < 0 || repoIdx < 0 {
+		return false
+	}
+
+	s.Snapshot.Workspaces[workspaceIdx].Repos[repoIdx].Health = health
+	return true
+}
+
 func (s *WorkspaceState) ensureSelection() {
 	if len(s.Snapshot.Workspaces) == 0 {
 		s.Snapshot.SelectedWorkspaceID = ""
@@ -146,6 +190,19 @@ func (s *WorkspaceState) ensureSelection() {
 	}
 }
 
+func (s WorkspaceState) currentIndexes() (int, int) {
+	workspaceIdx := findWorkspaceIndex(s.Snapshot.Workspaces, s.Snapshot.SelectedWorkspaceID)
+	if workspaceIdx < 0 {
+		return -1, -1
+	}
+	selectedRepoID := s.Snapshot.Workspaces[workspaceIdx].SelectedRepoID
+	if selectedRepoID == "" {
+		return workspaceIdx, -1
+	}
+
+	return workspaceIdx, findRepoIndex(s.Snapshot.Workspaces[workspaceIdx].Repos, selectedRepoID)
+}
+
 func findWorkspaceIndex(workspaces []workspace.Workspace, workspaceID string) int {
 	for i := range workspaces {
 		if workspaces[i].ID == workspaceID {
@@ -164,13 +221,24 @@ func containsRepoID(repos []workspace.Repo, repoID string) bool {
 	return false
 }
 
+func findRepoIndex(repos []workspace.Repo, repoID string) int {
+	for i := range repos {
+		if repos[i].ID == repoID {
+			return i
+		}
+	}
+	return -1
+}
+
 type Model struct {
-	ActiveTab       Tab
-	LeftPaneWidth   int
-	CenterPaneWidth int
-	RightPaneWidth  int
-	State           WorkspaceState
-	Keys            KeyMap
+	ActiveTab        Tab
+	LeftPaneWidth    int
+	CenterPaneWidth  int
+	RightPaneWidth   int
+	State            WorkspaceState
+	Keys             KeyMap
+	AddRepoRequested bool
+	StatusMessage    string
 }
 
 func NewModel(config Config) Model {

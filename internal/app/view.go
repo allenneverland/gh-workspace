@@ -42,6 +42,9 @@ func (m Model) renderLeftPane() string {
 		out.WriteString("\nenter: fix path")
 		out.WriteString("\nx: remove repo")
 	}
+	if m.StatusMessage != "" {
+		out.WriteString("\n\nstatus: " + m.StatusMessage)
+	}
 
 	return out.String()
 }
