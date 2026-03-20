@@ -43,3 +43,7 @@ type MsgSyncStartup struct{}
 type MsgRefreshSelectedRepo struct{}
 
 type MsgToggleAutoPolling struct{}
+
+type MsgSyncRefreshCompleted struct {
+	Err error
+}

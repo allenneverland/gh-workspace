@@ -51,6 +51,7 @@ type DiffRenderer interface {
 }
 
 type SyncEngine interface {
+	SetSelection(workspaceID, repoID string)
 	RefreshNow(ctx context.Context) (workspace.RepoStatus, error)
 	OnTick(ctx context.Context) (workspace.RepoStatus, error)
 	OnSelectionChanged(ctx context.Context, workspaceID, repoID string) (workspace.RepoStatus, error)

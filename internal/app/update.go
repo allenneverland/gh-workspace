@@ -17,31 +17,42 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MsgSelectWorkspace:
 		m.State.SelectWorkspace(msg.WorkspaceID)
-		m = syncOnSelectionChanged(m)
+		syncCmd := syncOnSelectionChangedCmd(m)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
-			return scheduleLazygitFrameWait(m)
+			next, lazygitCmd := scheduleLazygitFrameWait(m)
+			return next, tea.Batch(syncCmd, lazygitCmd)
 		}
 		if m.ActiveTab == TabDiff {
-			return requestDiffRender(m)
+			next, diffCmd := requestDiffRender(m)
+			return next, tea.Batch(syncCmd, diffCmd)
 		}
+		return m, syncCmd
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
-		m = syncOnSelectionChanged(m)
+		syncCmd := syncOnSelectionChangedCmd(m)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
-			return scheduleLazygitFrameWait(m)
+			next, lazygitCmd := scheduleLazygitFrameWait(m)
+			return next, tea.Batch(syncCmd, lazygitCmd)
 		}
 		if m.ActiveTab == TabDiff {
-			return requestDiffRender(m)
+			next, diffCmd := requestDiffRender(m)
+			return next, tea.Batch(syncCmd, diffCmd)
 		}
+		return m, syncCmd
 	case MsgSyncStartup:
-		m = syncOnSelectionChanged(m)
-		return m, scheduleSyncPolling(m)
+		syncSetSelection(m)
+		return m, tea.Batch(syncRefreshNowCmd(m), scheduleSyncPolling(m))
 	case MsgRefreshSelectedRepo:
-		m = syncRefreshNow(m)
+		syncSetSelection(m)
+		return m, syncRefreshNowCmd(m)
 	case MsgToggleAutoPolling:
 		return toggleAutoPolling(m)
+	case MsgSyncRefreshCompleted:
+		if msg.Err != nil {
+			m.StatusMessage = "failed to refresh selected repo: " + msg.Err.Error()
+		}
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
@@ -82,8 +93,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case MsgLazygitFrameClosed:
 		m.lazygitFrameListenerInFlight = false
 	case syncengine.MsgTick:
-		m = syncOnTick(m)
-		return m, scheduleSyncPolling(m)
+		return m, tea.Batch(syncOnTickCmd(m), scheduleSyncPolling(m))
 	case tea.KeyMsg:
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
@@ -97,6 +107,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, m.Keys.RemoveRepo):
 			if removed, ok := m.State.RemoveCurrentRepo(); ok {
 				m.StatusMessage = "removed repo: " + removed.Name
+				return m, syncOnSelectionChangedCmd(m)
 			} else {
 				m.StatusMessage = "no selected repo to remove"
 			}
@@ -108,10 +119,10 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			return m, func() tea.Msg { return MsgToggleAutoPolling{} }
 		case key.Matches(msg, m.Keys.NextWorkspace):
 			m.State.SelectNextWorkspace()
-			m = syncOnSelectionChanged(m)
+			return m, syncOnSelectionChangedCmd(m)
 		case key.Matches(msg, m.Keys.PrevWorkspace):
 			m.State.SelectPrevWorkspace()
-			m = syncOnSelectionChanged(m)
+			return m, syncOnSelectionChangedCmd(m)
 		}
 	}
 
@@ -182,44 +193,38 @@ func diffTabBlocksMutatingKeys(m Model, msg tea.KeyMsg) bool {
 		key.Matches(msg, m.Keys.PrevWorkspace)
 }
 
-func syncOnSelectionChanged(m Model) Model {
-	if m.SyncEngine == nil {
-		return m
-	}
-
-	_, err := m.SyncEngine.OnSelectionChanged(
-		context.Background(),
-		m.State.CurrentWorkspaceID(),
-		m.State.CurrentRepoID(),
-	)
-	if err != nil {
-		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
-	}
-	return m
+func syncOnSelectionChangedCmd(m Model) tea.Cmd {
+	syncSetSelection(m)
+	return syncRefreshNowCmd(m)
 }
 
-func syncRefreshNow(m Model) Model {
+func syncSetSelection(m Model) {
 	if m.SyncEngine == nil {
-		return m
+		return
 	}
-
-	_, err := m.SyncEngine.RefreshNow(context.Background())
-	if err != nil {
-		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
-	}
-	return m
+	m.SyncEngine.SetSelection(m.State.CurrentWorkspaceID(), m.State.CurrentRepoID())
 }
 
-func syncOnTick(m Model) Model {
+func syncRefreshNowCmd(m Model) tea.Cmd {
 	if m.SyncEngine == nil {
-		return m
+		return nil
 	}
 
-	_, err := m.SyncEngine.OnTick(context.Background())
-	if err != nil {
-		m.StatusMessage = "failed to refresh selected repo: " + err.Error()
+	return func() tea.Msg {
+		_, err := m.SyncEngine.RefreshNow(context.Background())
+		return MsgSyncRefreshCompleted{Err: err}
 	}
-	return m
+}
+
+func syncOnTickCmd(m Model) tea.Cmd {
+	if m.SyncEngine == nil {
+		return nil
+	}
+
+	return func() tea.Msg {
+		_, err := m.SyncEngine.OnTick(context.Background())
+		return MsgSyncRefreshCompleted{Err: err}
+	}
 }
 
 func scheduleSyncPolling(m Model) tea.Cmd {

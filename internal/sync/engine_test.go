@@ -52,6 +52,19 @@ func TestSyncEngine_OnRepoSwitch_TriggersImmediateRefresh(t *testing.T) {
 	}
 }
 
+func TestSyncEngine_OnTick_NoSelection_DoesNotFetch(t *testing.T) {
+	fetcher := &fakeStatusFetcher{}
+	engine := NewEngine(fetcher, WithInterval(time.Minute))
+
+	if _, err := engine.OnTick(context.Background()); err != nil {
+		t.Fatalf("OnTick() error = %v", err)
+	}
+
+	if len(fetcher.calls) != 0 {
+		t.Fatalf("expected no fetch calls without selection, got %d", len(fetcher.calls))
+	}
+}
+
 type fakeStatusFetcher struct {
 	calls []fetchCall
 }

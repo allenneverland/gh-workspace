@@ -82,6 +82,14 @@ func (e *Engine) RefreshNow(ctx context.Context) (workspace.RepoStatus, error) {
 	return e.fetcher.FetchSelectedRepoStatus(ctx, workspaceID, repoID)
 }
 
+func (e *Engine) SetSelection(workspaceID, repoID string) {
+	if e == nil {
+		return
+	}
+	e.selectedWorkspaceID = strings.TrimSpace(workspaceID)
+	e.selectedRepoID = strings.TrimSpace(repoID)
+}
+
 func (e *Engine) OnTick(ctx context.Context) (workspace.RepoStatus, error) {
 	if e == nil || !e.autoPolling {
 		return workspace.RepoStatus{}, nil
@@ -97,8 +105,7 @@ func (e *Engine) OnSelectionChanged(ctx context.Context, workspaceID, repoID str
 	workspaceID = strings.TrimSpace(workspaceID)
 	repoID = strings.TrimSpace(repoID)
 	changed := e.selectedWorkspaceID != workspaceID || e.selectedRepoID != repoID
-	e.selectedWorkspaceID = workspaceID
-	e.selectedRepoID = repoID
+	e.SetSelection(workspaceID, repoID)
 
 	if !changed {
 		return workspace.RepoStatus{}, nil
