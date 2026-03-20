@@ -12,6 +12,8 @@ type MsgSetActiveTab struct {
 	Tab Tab
 }
 
+type MsgRefreshDiff struct{}
+
 type MsgRequestAddRepo struct{}
 
 type MsgCreateWorktree struct {
@@ -29,3 +31,9 @@ type MsgLazygitFrame struct {
 }
 
 type MsgLazygitFrameClosed struct{}
+
+type MsgDiffRendered struct {
+	RequestID int
+	Output    string
+	Err       error
+}

@@ -1,19 +1,10 @@
 package app
 
 import (
-	"context"
-	"errors"
 	"strings"
 
-	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
-
-const diffTab Tab = "diff"
-
-var renderRepoDiff = func(ctx context.Context, repoPath string) (string, error) {
-	return diffadapter.NewRenderer().Render(ctx, repoPath)
-}
 
 func renderView(m Model) string {
 	var out strings.Builder
@@ -24,7 +15,7 @@ func renderView(m Model) string {
 	case TabLazygit:
 		out.WriteString("\n")
 		out.WriteString(m.renderLazygitCenter())
-	case diffTab:
+	case TabDiff:
 		out.WriteString("\n")
 		out.WriteString(m.renderDiffCenter())
 	}
@@ -117,13 +108,11 @@ func (m Model) renderDiffCenter() string {
 	if !ok || repo.ID == "" {
 		return "請先選擇 repo"
 	}
-
-	out, err := renderRepoDiff(context.Background(), repo.Path)
-	if err != nil {
-		if errors.Is(err, diffadapter.ErrDeltaNotFound) {
-			return "delta not found; install delta to use Diff tab"
-		}
-		return "failed to render diff: " + err.Error()
+	if m.DiffLoading {
+		return "Loading diff..."
 	}
-	return out
+	if m.DiffStatus != "" {
+		return m.DiffStatus
+	}
+	return m.DiffOutput
 }

@@ -55,6 +55,45 @@ func TestRenderer_RenderDiff_DeltaMissing_ReturnsErrDeltaNotFound(t *testing.T) 
 	}
 }
 
+func TestRenderer_RenderDiff_GitStartFailure_ReturnsError(t *testing.T) {
+	scriptDir := t.TempDir()
+	writeExecutableScript(t, filepath.Join(scriptDir, "delta"), `#!/bin/sh
+cat
+`)
+	t.Setenv("PATH", scriptDir)
+
+	renderer := NewRenderer()
+	_, err := renderer.Render(context.Background(), "/tmp/repo-path")
+	if err == nil {
+		t.Fatal("expected git start failure")
+	}
+	if !strings.Contains(err.Error(), "start git diff") {
+		t.Fatalf("expected git start failure context, got %q", err.Error())
+	}
+}
+
+func TestRenderer_RenderDiff_GitExitFailure_ReturnsGitErrorOutput(t *testing.T) {
+	tools := fakePathWithScripts(t, true)
+	writeExecutableScript(t, filepath.Join(tools.scriptDir, "git"), `#!/bin/sh
+printf '%s\n' "$*" > "`+tools.gitArgsLog+`"
+printf 'fatal: bad revision\n' >&2
+exit 1
+`)
+	t.Setenv("PATH", tools.scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	renderer := NewRenderer()
+	_, err := renderer.Render(context.Background(), "/tmp/repo-path")
+	if err == nil {
+		t.Fatal("expected git exit failure")
+	}
+	if !strings.Contains(err.Error(), "git diff failed") {
+		t.Fatalf("expected git diff failure context, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "fatal: bad revision") {
+		t.Fatalf("expected git stderr output in error, got %q", err.Error())
+	}
+}
+
 type fakeToolPaths struct {
 	scriptDir    string
 	gitArgsLog   string

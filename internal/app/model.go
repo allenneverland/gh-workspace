@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
 	lazygitadapter "github.com/allenneverland/gh-workspace/internal/adapters/lazygit"
 	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
@@ -15,6 +16,7 @@ type Tab string
 const (
 	TabOverview Tab = "overview"
 	TabLazygit  Tab = "lazygit"
+	TabDiff     Tab = "diff"
 )
 
 type Config struct {
@@ -41,6 +43,10 @@ type LazygitSessionManager interface {
 	StartSession(repoPath string) (LazygitSessionHandle, error)
 	WriteInput(sessionID string, input []byte) error
 	Frames() <-chan LazygitFrame
+}
+
+type DiffRenderer interface {
+	Render(ctx context.Context, repoPath string) (string, error)
 }
 
 type WorkspaceState struct {
@@ -273,19 +279,24 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 }
 
 type Model struct {
-	ActiveTab              Tab
-	LeftPaneWidth          int
-	CenterPaneWidth        int
-	RightPaneWidth         int
-	State                  WorkspaceState
-	Keys                   KeyMap
-	AddRepoRequested       bool
-	StatusMessage          string
-	WorktreeAdapter        WorktreeAdapter
-	Worktrees              []WorktreeItem
-	LazygitSessionManager  LazygitSessionManager
-	LazygitSessionID       string
-	LazygitCenterFrameText string
+	ActiveTab                    Tab
+	LeftPaneWidth                int
+	CenterPaneWidth              int
+	RightPaneWidth               int
+	State                        WorkspaceState
+	Keys                         KeyMap
+	AddRepoRequested             bool
+	StatusMessage                string
+	WorktreeAdapter              WorktreeAdapter
+	Worktrees                    []WorktreeItem
+	LazygitSessionManager        LazygitSessionManager
+	LazygitSessionID             string
+	LazygitCenterFrameText       string
+	DiffRenderer                 DiffRenderer
+	DiffOutput                   string
+	DiffStatus                   string
+	DiffLoading                  bool
+	diffRenderRequestID          int
 	lazygitFrameListenerInFlight bool
 }
 
@@ -299,6 +310,7 @@ func NewModel(config Config) Model {
 		Keys:                  DefaultKeyMap(),
 		WorktreeAdapter:       appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
 		LazygitSessionManager: lazygitadapter.NewSessionManager(),
+		DiffRenderer:          diffadapter.NewRenderer(),
 	}
 }
 

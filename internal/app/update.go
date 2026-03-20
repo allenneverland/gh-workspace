@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 
+	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,8 +20,8 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
 		}
-		if m.ActiveTab == diffTab {
-			return m, nil
+		if m.ActiveTab == TabDiff {
+			return requestDiffRender(m)
 		}
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
@@ -26,8 +29,8 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
 		}
-		if m.ActiveTab == diffTab {
-			return m, nil
+		if m.ActiveTab == TabDiff {
+			return requestDiffRender(m)
 		}
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
@@ -35,17 +38,31 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
 		}
-		if m.ActiveTab == diffTab {
-			// Diff tab remains read-only in v1 and renders directly from view.
-			return m, nil
+		if m.ActiveTab == TabDiff {
+			return requestDiffRender(m)
+		}
+	case MsgRefreshDiff:
+		if m.ActiveTab == TabDiff {
+			return requestDiffRender(m)
 		}
 	case MsgRequestAddRepo:
+		if m.ActiveTab == TabDiff {
+			return m, nil
+		}
 		m.AddRepoRequested = true
 		m.StatusMessage = "add repo requested"
 	case MsgCreateWorktree:
+		if m.ActiveTab == TabDiff {
+			return m, nil
+		}
 		m = createWorktree(m, msg)
 	case MsgSwitchWorktree:
+		if m.ActiveTab == TabDiff {
+			return m, nil
+		}
 		m = switchWorktree(m, msg)
+	case MsgDiffRendered:
+		m = applyDiffRenderResult(m, msg)
 	case MsgLazygitFrame:
 		m.lazygitFrameListenerInFlight = false
 		if msg.SessionID == m.LazygitSessionID {
@@ -57,6 +74,9 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
+		}
+		if diffTabBlocksMutatingKeys(m, msg) {
+			return m, nil
 		}
 		switch {
 		case key.Matches(msg, m.Keys.AddRepo):
@@ -130,6 +150,78 @@ func scheduleLazygitFrameWait(m Model) (Model, tea.Cmd) {
 
 func lazygitOwnsKeys(m Model) bool {
 	return m.ActiveTab == TabLazygit && m.LazygitSessionManager != nil && m.LazygitSessionID != ""
+}
+
+func diffTabBlocksMutatingKeys(m Model, msg tea.KeyMsg) bool {
+	if m.ActiveTab != TabDiff {
+		return false
+	}
+	return key.Matches(msg, m.Keys.AddRepo) ||
+		key.Matches(msg, m.Keys.RemoveRepo) ||
+		key.Matches(msg, m.Keys.SelectRepo) ||
+		key.Matches(msg, m.Keys.NextWorkspace) ||
+		key.Matches(msg, m.Keys.PrevWorkspace)
+}
+
+func requestDiffRender(m Model) (Model, tea.Cmd) {
+	if m.ActiveTab != TabDiff {
+		return m, nil
+	}
+
+	repo, ok := m.State.CurrentRepo()
+	if !ok || strings.TrimSpace(repo.Path) == "" {
+		m.DiffLoading = false
+		m.DiffOutput = ""
+		m.DiffStatus = ""
+		return m, nil
+	}
+	if m.DiffRenderer == nil {
+		m.DiffLoading = false
+		m.DiffOutput = ""
+		m.DiffStatus = "diff renderer unavailable"
+		return m, nil
+	}
+
+	m.diffRenderRequestID++
+	requestID := m.diffRenderRequestID
+	repoPath := repo.Path
+	m.DiffLoading = true
+	m.DiffStatus = ""
+
+	return m, func() tea.Msg {
+		out, err := m.DiffRenderer.Render(context.Background(), repoPath)
+		return MsgDiffRendered{
+			RequestID: requestID,
+			Output:    out,
+			Err:       err,
+		}
+	}
+}
+
+func applyDiffRenderResult(m Model, msg MsgDiffRendered) Model {
+	if msg.RequestID != m.diffRenderRequestID {
+		return m
+	}
+
+	m.DiffLoading = false
+	if msg.Err != nil {
+		m.DiffOutput = ""
+		if errors.Is(msg.Err, diffadapter.ErrDeltaNotFound) {
+			m.DiffStatus = "delta not found; install delta to use Diff tab"
+			return m
+		}
+		m.DiffStatus = "failed to render diff: " + msg.Err.Error()
+		return m
+	}
+
+	m.DiffOutput = msg.Output
+	if strings.TrimSpace(msg.Output) == "" {
+		m.DiffStatus = "(no changes)"
+		return m
+	}
+
+	m.DiffStatus = ""
+	return m
 }
 
 func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
