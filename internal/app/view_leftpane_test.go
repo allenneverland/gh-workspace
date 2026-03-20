@@ -41,6 +41,58 @@ func TestView_LeftPaneRendersInvalidRepoRecoveryHints(t *testing.T) {
 	assertContains(t, got, "x: remove repo")
 }
 
+func TestView_FolderMode_HidesWorkspacesSection(t *testing.T) {
+	m := seededModelWithRepos()
+	m.UIMode = ModeFolder
+
+	got := m.View()
+	if strings.Contains(got, "Workspaces\n") {
+		t.Fatalf("workspaces section should be hidden in folder mode, got:\n%s", got)
+	}
+}
+
+func TestView_WorkspaceMode_HidesSystemWorkspaceEntry(t *testing.T) {
+	m := seededModelWithSystemAndUserWorkspaces()
+
+	got := m.View()
+	if strings.Contains(got, workspace.LocalWorkspaceName) {
+		t.Fatalf("system workspace should not be rendered in workspace mode, got:\n%s", got)
+	}
+	assertContains(t, got, "team-a")
+}
+
+func TestView_FolderMode_EmptyState_ShowsGuidance(t *testing.T) {
+	m := NewModel(Config{InitialUIMode: ModeFolder})
+
+	got := m.View()
+	assertContains(t, got, "current folder is not a git repo")
+	assertContains(t, got, "press a to add repo path")
+	assertContains(t, got, "-w <name>")
+}
+
+func seededModelWithSystemAndUserWorkspaces() Model {
+	return NewModel(Config{
+		InitialUIMode: ModeWorkspace,
+		InitialState: workspace.State{
+			SelectedWorkspaceID: workspace.LocalWorkspaceID,
+			Workspaces: []workspace.Workspace{
+				{
+					ID:   workspace.LocalWorkspaceID,
+					Name: workspace.LocalWorkspaceName,
+				},
+				{
+					ID:   "ws-team-a",
+					Name: "team-a",
+					Repos: []workspace.Repo{
+						{ID: "repo-a", Name: "api", Path: "/tmp/api", Health: workspace.RepoHealthy},
+					},
+					SelectedRepoID: "repo-a",
+				},
+			},
+		},
+	})
+}
+
 func assertContains(t *testing.T, got, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {

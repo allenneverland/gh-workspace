@@ -313,6 +313,46 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 	return -1
 }
 
+func isSystemWorkspaceEntry(ws workspace.Workspace) bool {
+	return ws.ID == workspace.LocalWorkspaceID || ws.Name == workspace.LocalWorkspaceName
+}
+
+func userWorkspaceIDs(workspaces []workspace.Workspace) []string {
+	ids := make([]string, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if isSystemWorkspaceEntry(ws) {
+			continue
+		}
+		ids = append(ids, ws.ID)
+	}
+	return ids
+}
+
+func normalizeWorkspaceModeState(state *WorkspaceState) bool {
+	if state == nil {
+		return false
+	}
+
+	userIDs := userWorkspaceIDs(state.Snapshot.Workspaces)
+	if len(userIDs) == 0 {
+		if state.Snapshot.SelectedWorkspaceID == "" {
+			return false
+		}
+		state.Snapshot.SelectedWorkspaceID = ""
+		return true
+	}
+
+	for _, id := range userIDs {
+		if id == state.Snapshot.SelectedWorkspaceID {
+			return false
+		}
+	}
+
+	state.Snapshot.SelectedWorkspaceID = userIDs[0]
+	state.ensureSelection()
+	return true
+}
+
 type Model struct {
 	ActiveTab                    Tab
 	UIMode                       UIMode
@@ -381,6 +421,9 @@ func NewModel(config Config) Model {
 	}
 	if m.SyncEngine == nil {
 		m.SyncEngine = syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{})
+	}
+	if m.UIMode == ModeWorkspace {
+		_ = normalizeWorkspaceModeState(&m.State)
 	}
 	return publishSyncState(m)
 }

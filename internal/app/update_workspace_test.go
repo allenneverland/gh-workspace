@@ -184,6 +184,84 @@ func TestUpdate_SelectRepoBinding_DrivesInvalidRecovery(t *testing.T) {
 	}
 }
 
+func TestUpdate_FolderMode_WorkspaceKeysAreDisabled(t *testing.T) {
+	m := seededModelWithSystemAndUserWorkspaces()
+	m.UIMode = ModeFolder
+	m.State.Snapshot.SelectedWorkspaceID = workspace.LocalWorkspaceID
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	if cmd != nil {
+		t.Fatal("expected no command for disabled workspace navigation key in folder mode")
+	}
+	got := updated.(Model)
+	if got.State.CurrentWorkspaceID() != workspace.LocalWorkspaceID {
+		t.Fatalf("expected selected workspace to remain %q, got %q", workspace.LocalWorkspaceID, got.State.CurrentWorkspaceID())
+	}
+}
+
+func TestUpdate_WorkspaceMode_NavigationSkipsSystemWorkspace(t *testing.T) {
+	m := seededModelWithSystemAndUserWorkspaces()
+	m.State.Snapshot.Workspaces = append(
+		m.State.Snapshot.Workspaces,
+		workspace.Workspace{
+			ID:             "ws-team-b",
+			Name:           "team-b",
+			SelectedRepoID: "repo-b",
+			Repos: []workspace.Repo{
+				{ID: "repo-b", Name: "web", Path: "/tmp/web", Health: workspace.RepoHealthy},
+			},
+		},
+	)
+	m.State.Snapshot.SelectedWorkspaceID = "ws-team-a"
+
+	prevUpdated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	prev := prevUpdated.(Model)
+	if prev.State.CurrentWorkspaceID() != "ws-team-b" {
+		t.Fatalf("expected previous workspace %q, got %q", "ws-team-b", prev.State.CurrentWorkspaceID())
+	}
+	if prev.State.CurrentWorkspaceID() == workspace.LocalWorkspaceID {
+		t.Fatalf("workspace mode navigation should skip %q", workspace.LocalWorkspaceID)
+	}
+
+	nextUpdated, _ := prev.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	next := nextUpdated.(Model)
+	if next.State.CurrentWorkspaceID() != "ws-team-a" {
+		t.Fatalf("expected next workspace %q, got %q", "ws-team-a", next.State.CurrentWorkspaceID())
+	}
+	if next.State.CurrentWorkspaceID() == workspace.LocalWorkspaceID {
+		t.Fatalf("workspace mode navigation should skip %q", workspace.LocalWorkspaceID)
+	}
+}
+
+func TestUpdate_WorkspaceMode_SelectSystemWorkspaceAutoSelectsFirstUser(t *testing.T) {
+	m := seededModelWithSystemAndUserWorkspaces()
+
+	updated, _ := m.Update(MsgSelectWorkspace{WorkspaceID: workspace.LocalWorkspaceID})
+	got := updated.(Model)
+	if got.State.CurrentWorkspaceID() != "ws-team-a" {
+		t.Fatalf("expected system selection to normalize to first user workspace %q, got %q", "ws-team-a", got.State.CurrentWorkspaceID())
+	}
+}
+
+func TestNewModel_WorkspaceMode_WithOnlySystemWorkspace_LeavesSelectionEmpty(t *testing.T) {
+	m := NewModel(Config{
+		InitialUIMode: ModeWorkspace,
+		InitialState: workspace.State{
+			SelectedWorkspaceID: workspace.LocalWorkspaceID,
+			Workspaces: []workspace.Workspace{
+				{
+					ID:   workspace.LocalWorkspaceID,
+					Name: workspace.LocalWorkspaceName,
+				},
+			},
+		},
+	})
+
+	if got := m.State.CurrentWorkspaceID(); got != "" {
+		t.Fatalf("expected empty selected workspace when only system workspace exists in workspace mode, got %q", got)
+	}
+}
+
 func seededModelWithRepos() Model {
 	return NewModel(Config{
 		InitialState: workspace.State{

@@ -17,7 +17,14 @@ import (
 func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MsgSelectWorkspace:
+		changed := false
 		if m.State.SelectWorkspace(msg.WorkspaceID) {
+			changed = true
+		}
+		if m.UIMode == ModeWorkspace && normalizeWorkspaceModeState(&m.State) {
+			changed = true
+		}
+		if changed {
 			m = persistAndPublishState(m)
 		}
 		next, syncCmd := syncOnSelectionChanged(m)
@@ -134,11 +141,33 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, m.Keys.TogglePolling):
 			return m, func() tea.Msg { return MsgToggleAutoPolling{} }
 		case key.Matches(msg, m.Keys.NextWorkspace):
+			if m.UIMode == ModeFolder {
+				return m, nil
+			}
+			if m.UIMode == ModeWorkspace {
+				var changed bool
+				m, changed = selectAdjacentWorkspaceModeWorkspace(m, true)
+				if changed {
+					m = persistAndPublishState(m)
+				}
+				return syncOnSelectionChanged(m)
+			}
 			if m.State.SelectNextWorkspace() {
 				m = persistAndPublishState(m)
 			}
 			return syncOnSelectionChanged(m)
 		case key.Matches(msg, m.Keys.PrevWorkspace):
+			if m.UIMode == ModeFolder {
+				return m, nil
+			}
+			if m.UIMode == ModeWorkspace {
+				var changed bool
+				m, changed = selectAdjacentWorkspaceModeWorkspace(m, false)
+				if changed {
+					m = persistAndPublishState(m)
+				}
+				return syncOnSelectionChanged(m)
+			}
 			if m.State.SelectPrevWorkspace() {
 				m = persistAndPublishState(m)
 			}
@@ -147,6 +176,49 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func selectAdjacentWorkspaceModeWorkspace(m Model, forward bool) (Model, bool) {
+	workspaceIDs := userWorkspaceIDs(m.State.Snapshot.Workspaces)
+	if len(workspaceIDs) == 0 {
+		if m.State.Snapshot.SelectedWorkspaceID == "" {
+			return m, false
+		}
+		m.State.Snapshot.SelectedWorkspaceID = ""
+		return m, true
+	}
+
+	currentIdx := -1
+	for i, id := range workspaceIDs {
+		if id == m.State.Snapshot.SelectedWorkspaceID {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		m.State.Snapshot.SelectedWorkspaceID = workspaceIDs[0]
+		m.State.ensureSelection()
+		return m, true
+	}
+
+	nextIdx := currentIdx
+	if forward {
+		nextIdx = (currentIdx + 1) % len(workspaceIDs)
+	} else {
+		nextIdx = currentIdx - 1
+		if nextIdx < 0 {
+			nextIdx = len(workspaceIDs) - 1
+		}
+	}
+
+	nextWorkspaceID := workspaceIDs[nextIdx]
+	if nextWorkspaceID == m.State.Snapshot.SelectedWorkspaceID {
+		return m, false
+	}
+
+	m.State.Snapshot.SelectedWorkspaceID = nextWorkspaceID
+	m.State.ensureSelection()
+	return m, true
 }
 
 func ensureLazygitSession(m Model) Model {

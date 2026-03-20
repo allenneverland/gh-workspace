@@ -49,16 +49,27 @@ func (m Model) renderLeftPane() string {
 		selectedWorktreePath = repo.SelectedWorktreePath
 	}
 
-	out.WriteString("Workspaces\n")
-	for _, ws := range m.State.Snapshot.Workspaces {
-		marker := "  "
-		if ws.ID == m.State.Snapshot.SelectedWorkspaceID {
-			marker = "> "
+	if m.UIMode == ModeWorkspace {
+		out.WriteString("Workspaces\n")
+		rendered := 0
+		for _, ws := range m.State.Snapshot.Workspaces {
+			if isSystemWorkspaceEntry(ws) {
+				continue
+			}
+			marker := "  "
+			if ws.ID == m.State.Snapshot.SelectedWorkspaceID {
+				marker = "> "
+			}
+			out.WriteString(marker + ws.Name + "\n")
+			rendered++
 		}
-		out.WriteString(marker + ws.Name + "\n")
+		if rendered == 0 {
+			out.WriteString("  (none)\n")
+		}
+		out.WriteString("\n")
 	}
 
-	out.WriteString("\nRepos\n")
+	out.WriteString("Repos\n")
 	if ws, ok := m.State.CurrentWorkspace(); ok {
 		for _, repo := range ws.Repos {
 			marker := "  "
@@ -103,8 +114,17 @@ func (m Model) renderLeftPane() string {
 		out.WriteString("\nenter: fix path")
 		out.WriteString("\nx: remove repo")
 	}
-	if m.StatusMessage != "" {
-		out.WriteString("\n\nstatus: " + m.StatusMessage)
+
+	statusMessage := strings.TrimSpace(m.StatusMessage)
+	if m.UIMode == ModeFolder && m.State.CurrentRepoID() == "" && statusMessage == "" {
+		statusMessage = "current folder is not a git repo"
+	}
+	if statusMessage != "" {
+		out.WriteString("\n\nstatus: " + statusMessage)
+	}
+	if m.UIMode == ModeFolder && m.State.CurrentRepoID() == "" {
+		out.WriteString("\npress a to add repo path")
+		out.WriteString("\nlaunch workspace mode with -w <name>")
 	}
 
 	return out.String()
