@@ -142,6 +142,145 @@ func TestService_DeleteWorkspace_ReturnsErrorWhenWorkspaceMissing(t *testing.T) 
 	}
 }
 
+func TestService_MarkRepoInvalid_PersistsRepoHealth(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	ws, err := svc.CreateWorkspace("default")
+	if err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+
+	repo, err := svc.AddRepo(ws.ID, RepoInput{Name: "api", Path: "/tmp/api"})
+	if err != nil {
+		t.Fatalf("AddRepo() error = %v", err)
+	}
+
+	if err := svc.MarkRepoInvalid(ws.ID, repo.ID); err != nil {
+		t.Fatalf("MarkRepoInvalid() error = %v", err)
+	}
+
+	state, err := NewService(mem).LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	gotWorkspace, ok := findWorkspace(state, ws.ID)
+	if !ok {
+		t.Fatalf("workspace %q not found", ws.ID)
+	}
+	if len(gotWorkspace.Repos) != 1 {
+		t.Fatalf("expected one repo, got %d", len(gotWorkspace.Repos))
+	}
+	if gotWorkspace.Repos[0].Health != RepoInvalid {
+		t.Fatalf("expected repo health %q, got %q", RepoInvalid, gotWorkspace.Repos[0].Health)
+	}
+}
+
+func TestService_UpdateRepoPath_UpdatesPathAndSetsHealthy(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	ws, err := svc.CreateWorkspace("default")
+	if err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+
+	repo, err := svc.AddRepo(ws.ID, RepoInput{Name: "api", Path: "/tmp/api"})
+	if err != nil {
+		t.Fatalf("AddRepo() error = %v", err)
+	}
+	if err := svc.MarkRepoInvalid(ws.ID, repo.ID); err != nil {
+		t.Fatalf("MarkRepoInvalid() error = %v", err)
+	}
+
+	if err := svc.UpdateRepoPath(ws.ID, repo.ID, "/tmp/api-new"); err != nil {
+		t.Fatalf("UpdateRepoPath() error = %v", err)
+	}
+
+	state, err := NewService(mem).LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	gotWorkspace, ok := findWorkspace(state, ws.ID)
+	if !ok {
+		t.Fatalf("workspace %q not found", ws.ID)
+	}
+	if len(gotWorkspace.Repos) != 1 {
+		t.Fatalf("expected one repo, got %d", len(gotWorkspace.Repos))
+	}
+	if gotWorkspace.Repos[0].Path != "/tmp/api-new" {
+		t.Fatalf("expected path %q, got %q", "/tmp/api-new", gotWorkspace.Repos[0].Path)
+	}
+	if gotWorkspace.Repos[0].Health != RepoHealthy {
+		t.Fatalf("expected repo health %q, got %q", RepoHealthy, gotWorkspace.Repos[0].Health)
+	}
+}
+
+func TestService_UpdateRepoPath_RejectsEmptyPath(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	ws, err := svc.CreateWorkspace("default")
+	if err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	repo, err := svc.AddRepo(ws.ID, RepoInput{Name: "api", Path: "/tmp/api"})
+	if err != nil {
+		t.Fatalf("AddRepo() error = %v", err)
+	}
+
+	err = svc.UpdateRepoPath(ws.ID, repo.ID, " ")
+	if err == nil {
+		t.Fatal("UpdateRepoPath() error = nil, want non-nil")
+	}
+	if !errors.Is(err, ErrRepoPathMissing) {
+		t.Fatalf("UpdateRepoPath() error mismatch: want errors.Is(..., ErrRepoPathMissing), got %v", err)
+	}
+}
+
+func TestService_RemoveRepo_RemovesRepoAndUpdatesSelection(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	ws, err := svc.CreateWorkspace("default")
+	if err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	first, err := svc.AddRepo(ws.ID, RepoInput{Name: "api", Path: "/tmp/api"})
+	if err != nil {
+		t.Fatalf("AddRepo(first) error = %v", err)
+	}
+	second, err := svc.AddRepo(ws.ID, RepoInput{Name: "web", Path: "/tmp/web"})
+	if err != nil {
+		t.Fatalf("AddRepo(second) error = %v", err)
+	}
+	if err := svc.SelectRepo(ws.ID, second.ID); err != nil {
+		t.Fatalf("SelectRepo() error = %v", err)
+	}
+
+	if err := svc.RemoveRepo(ws.ID, second.ID); err != nil {
+		t.Fatalf("RemoveRepo() error = %v", err)
+	}
+
+	state, err := NewService(mem).LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	gotWorkspace, ok := findWorkspace(state, ws.ID)
+	if !ok {
+		t.Fatalf("workspace %q not found", ws.ID)
+	}
+	if len(gotWorkspace.Repos) != 1 {
+		t.Fatalf("expected one repo, got %d", len(gotWorkspace.Repos))
+	}
+	if gotWorkspace.Repos[0].ID != first.ID {
+		t.Fatalf("expected remaining repo %q, got %q", first.ID, gotWorkspace.Repos[0].ID)
+	}
+	if gotWorkspace.SelectedRepoID != first.ID {
+		t.Fatalf("expected selected repo %q, got %q", first.ID, gotWorkspace.SelectedRepoID)
+	}
+}
+
 type memoryStore struct {
 	state State
 }

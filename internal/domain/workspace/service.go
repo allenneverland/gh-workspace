@@ -18,6 +18,13 @@ var (
 	ErrRepoPathMissing      = errors.New("workspace: repo path is required")
 )
 
+type RepoHealth string
+
+const (
+	RepoHealthy RepoHealth = "healthy"
+	RepoInvalid RepoHealth = "invalid"
+)
+
 type StateStore interface {
 	Load(context.Context) (State, error)
 	Save(context.Context, State) error
@@ -91,6 +98,7 @@ func (s *Service) AddRepo(workspaceID string, input RepoInput) (Repo, error) {
 		Path:               input.Path,
 		DefaultBranch:      input.DefaultBranch,
 		ReleaseWorkflowRef: input.ReleaseWorkflowRef,
+		Health:             RepoHealthy,
 	}
 	state.Workspaces[workspaceIdx].Repos = append(state.Workspaces[workspaceIdx].Repos, repo)
 	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
@@ -144,6 +152,84 @@ func (s *Service) SelectRepo(workspaceID, repoID string) error {
 	return s.store.Save(context.Background(), state)
 }
 
+func (s *Service) MarkRepoInvalid(workspaceID, repoID string) error {
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, workspaceID)
+	if workspaceIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
+	}
+
+	repoIdx := findRepoIndex(state.Workspaces[workspaceIdx].Repos, repoID)
+	if repoIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+	}
+
+	state.Workspaces[workspaceIdx].Repos[repoIdx].Health = RepoInvalid
+	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
+	return s.store.Save(context.Background(), state)
+}
+
+func (s *Service) UpdateRepoPath(workspaceID, repoID, newPath string) error {
+	if strings.TrimSpace(newPath) == "" {
+		return ErrRepoPathMissing
+	}
+
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, workspaceID)
+	if workspaceIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
+	}
+
+	repoIdx := findRepoIndex(state.Workspaces[workspaceIdx].Repos, repoID)
+	if repoIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+	}
+
+	state.Workspaces[workspaceIdx].Repos[repoIdx].Path = newPath
+	state.Workspaces[workspaceIdx].Repos[repoIdx].Health = RepoHealthy
+	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
+	return s.store.Save(context.Background(), state)
+}
+
+func (s *Service) RemoveRepo(workspaceID, repoID string) error {
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, workspaceID)
+	if workspaceIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
+	}
+
+	repoIdx := findRepoIndex(state.Workspaces[workspaceIdx].Repos, repoID)
+	if repoIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+	}
+
+	state.Workspaces[workspaceIdx].Repos = append(
+		state.Workspaces[workspaceIdx].Repos[:repoIdx],
+		state.Workspaces[workspaceIdx].Repos[repoIdx+1:]...,
+	)
+	if state.Workspaces[workspaceIdx].SelectedRepoID == repoID {
+		if len(state.Workspaces[workspaceIdx].Repos) == 0 {
+			state.Workspaces[workspaceIdx].SelectedRepoID = ""
+		} else {
+			state.Workspaces[workspaceIdx].SelectedRepoID = state.Workspaces[workspaceIdx].Repos[0].ID
+		}
+	}
+	state.Workspaces[workspaceIdx].UpdatedAt = time.Now().UTC()
+	return s.store.Save(context.Background(), state)
+}
+
 func findWorkspaceIndex(workspaces []Workspace, workspaceID string) int {
 	for i := range workspaces {
 		if workspaces[i].ID == workspaceID {
@@ -160,6 +246,15 @@ func containsRepo(repos []Repo, repoID string) bool {
 		}
 	}
 	return false
+}
+
+func findRepoIndex(repos []Repo, repoID string) int {
+	for i := range repos {
+		if repos[i].ID == repoID {
+			return i
+		}
+	}
+	return -1
 }
 
 var idSequence atomic.Uint64

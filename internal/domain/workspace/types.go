@@ -17,11 +17,12 @@ type Workspace struct {
 }
 
 type Repo struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Path               string `json:"path"`
-	DefaultBranch      string `json:"default_branch"`
-	ReleaseWorkflowRef string `json:"release_workflow_ref"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Path               string     `json:"path"`
+	DefaultBranch      string     `json:"default_branch"`
+	ReleaseWorkflowRef string     `json:"release_workflow_ref"`
+	Health             RepoHealth `json:"health"`
 }
 
 type RepoInput struct {
