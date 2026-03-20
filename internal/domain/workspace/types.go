@@ -6,8 +6,9 @@ import (
 )
 
 type State struct {
-	SelectedWorkspaceID string      `json:"selected_workspace_id"`
-	Workspaces          []Workspace `json:"workspaces"`
+	SelectedWorkspaceID string                        `json:"selected_workspace_id"`
+	Workspaces          []Workspace                   `json:"workspaces"`
+	RepoStatusSnapshots map[string]RepoStatusSnapshot `json:"repo_status_snapshots,omitempty"`
 }
 
 type Workspace struct {
@@ -51,6 +52,15 @@ type RepoStatus struct {
 	PR      Status `json:"pr"`
 	CI      Status `json:"ci"`
 	Release Status `json:"release"`
+}
+
+type RepoStatusSnapshot struct {
+	PR           Status    `json:"pr"`
+	CI           Status    `json:"ci"`
+	Release      Status    `json:"release"`
+	LastSyncedAt time.Time `json:"last_synced_at"`
+	IsStale      bool      `json:"is_stale"`
+	LatestError  string    `json:"latest_error,omitempty"`
 }
 
 func StatusFromGitHubRun(status, conclusion string) Status {

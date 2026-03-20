@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -122,6 +123,52 @@ func TestSync_KeyManualRefresh_RefreshesSelectedRepoAsync(t *testing.T) {
 	if engine.refreshFetchCalls[0].repoID != "repo-1" {
 		t.Fatalf("expected manual refresh repo %q, got %q", "repo-1", engine.refreshFetchCalls[0].repoID)
 	}
+}
+
+func TestSync_ManualRefresh_UpdatesRightPaneSnapshot(t *testing.T) {
+	m := seededModelWithRepos()
+	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
+	engine := newFakeSyncEngine()
+	engine.refreshNowStatus = workspace.RepoStatus{
+		PR:      workspace.StatusSuccess,
+		CI:      workspace.StatusFailure,
+		Release: workspace.StatusInProgress,
+	}
+	m.SyncEngine = engine
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Fatal("expected manual refresh key to emit a command")
+	}
+	msg := cmd()
+	afterMsg, refreshCmd := updated.(Model).Update(msg)
+	if refreshCmd == nil {
+		t.Fatal("expected async refresh command after manual refresh message")
+	}
+	final := drainSyncCommands(t, afterMsg.(Model), refreshCmd)
+
+	snapshot := final.repoStatusSnapshotForCurrentRepo()
+	if snapshot.PR != workspace.StatusSuccess {
+		t.Fatalf("expected PR status %q, got %q", workspace.StatusSuccess, snapshot.PR)
+	}
+	if snapshot.CI != workspace.StatusFailure {
+		t.Fatalf("expected CI status %q, got %q", workspace.StatusFailure, snapshot.CI)
+	}
+	if snapshot.Release != workspace.StatusInProgress {
+		t.Fatalf("expected Release status %q, got %q", workspace.StatusInProgress, snapshot.Release)
+	}
+	if snapshot.LastSyncedAt.IsZero() {
+		t.Fatal("expected LastSyncedAt to be set after refresh completion")
+	}
+	if snapshot.IsStale {
+		t.Fatal("expected snapshot not stale after successful refresh")
+	}
+	if snapshot.LatestError != "" {
+		t.Fatalf("expected empty latest error, got %q", snapshot.LatestError)
+	}
+	assertContains(t, final.View(), "pr: success")
+	assertContains(t, final.View(), "ci: failure")
+	assertContains(t, final.View(), "release: in_progress")
 }
 
 func TestSync_KeyToggleAutoPolling_TogglesEngineState(t *testing.T) {
@@ -253,6 +300,85 @@ func TestSync_Tick_NoSelection_DoesNotFetch(t *testing.T) {
 	}
 }
 
+func TestSync_RefreshBackpressure_DropsOverlappingRefreshCommandsAndRunsSingleFollowup(t *testing.T) {
+	m := seededModelWithRepos()
+	engine := newFakeSyncEngine()
+	engine.refreshNowStatus = workspace.RepoStatus{PR: workspace.StatusSuccess}
+	m.SyncEngine = engine
+
+	firstUpdated, firstCmd := m.Update(MsgRefreshSelectedRepo{})
+	first := firstUpdated.(Model)
+	if firstCmd == nil {
+		t.Fatal("expected first refresh command")
+	}
+	secondUpdated, secondCmd := first.Update(MsgRefreshSelectedRepo{})
+	second := secondUpdated.(Model)
+	if secondCmd != nil {
+		t.Fatal("expected second refresh request to be backpressured while first is in flight")
+	}
+
+	firstResult := firstCmd()
+	afterFirstResult, followupCmd := second.Update(firstResult)
+	mid := afterFirstResult.(Model)
+	if followupCmd == nil {
+		t.Fatal("expected one follow-up refresh command after first completion")
+	}
+	if engine.refreshNowCalls != 1 {
+		t.Fatalf("expected one refresh execution after first completion, got %d", engine.refreshNowCalls)
+	}
+
+	secondResult := followupCmd()
+	finalUpdated, finalCmd := mid.Update(secondResult)
+	final := finalUpdated.(Model)
+	if finalCmd != nil {
+		t.Fatal("expected no additional refresh command after draining backpressure")
+	}
+	if engine.refreshNowCalls != 2 {
+		t.Fatalf("expected exactly two refresh executions (first + queued), got %d", engine.refreshNowCalls)
+	}
+	if final.repoStatusSnapshotForCurrentRepo().LastSyncedAt.IsZero() {
+		t.Fatal("expected snapshot timestamp to be updated after queued refresh")
+	}
+}
+
+func TestSync_TickBackpressure_DropsOverlappingTickCommandsAndRunsSingleFollowup(t *testing.T) {
+	m := seededModelWithRepos()
+	engine := newFakeSyncEngine()
+	engine.autoPolling = false
+	engine.onTickStatus = workspace.RepoStatus{PR: workspace.StatusInProgress}
+	m.SyncEngine = engine
+
+	firstUpdated, firstCmd := m.Update(syncengine.MsgTick{})
+	first := firstUpdated.(Model)
+	if firstCmd == nil {
+		t.Fatal("expected first tick command")
+	}
+	secondUpdated, secondCmd := first.Update(syncengine.MsgTick{})
+	second := secondUpdated.(Model)
+	if secondCmd != nil {
+		t.Fatal("expected second tick to be backpressured while first tick refresh is in flight")
+	}
+
+	firstResult := firstCmd()
+	afterFirstResult, followupCmd := second.Update(firstResult)
+	if followupCmd == nil {
+		t.Fatal("expected one queued tick refresh command after first completion")
+	}
+	if engine.onTickCalls != 1 {
+		t.Fatalf("expected one OnTick execution after first completion, got %d", engine.onTickCalls)
+	}
+
+	secondResult := followupCmd()
+	finalUpdated, finalCmd := afterFirstResult.(Model).Update(secondResult)
+	_ = finalUpdated.(Model)
+	if finalCmd != nil {
+		t.Fatal("expected no additional command after queued tick executes")
+	}
+	if engine.onTickCalls != 2 {
+		t.Fatalf("expected exactly two OnTick executions (first + queued), got %d", engine.onTickCalls)
+	}
+}
+
 func drainSyncCommands(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
 	queue := []tea.Cmd{cmd}
@@ -294,6 +420,10 @@ type fakeSyncEngine struct {
 	autoPolling         bool
 	selectedWorkspaceID string
 	selectedRepoID      string
+	refreshNowStatus    workspace.RepoStatus
+	onTickStatus        workspace.RepoStatus
+	refreshNowErr       error
+	onTickErr           error
 }
 
 type selectionCall struct {
@@ -302,7 +432,19 @@ type selectionCall struct {
 }
 
 func newFakeSyncEngine() *fakeSyncEngine {
-	return &fakeSyncEngine{autoPolling: true}
+	return &fakeSyncEngine{
+		autoPolling: true,
+		refreshNowStatus: workspace.RepoStatus{
+			PR:      workspace.StatusNeutral,
+			CI:      workspace.StatusNeutral,
+			Release: workspace.StatusNeutral,
+		},
+		onTickStatus: workspace.RepoStatus{
+			PR:      workspace.StatusNeutral,
+			CI:      workspace.StatusNeutral,
+			Release: workspace.StatusNeutral,
+		},
+	}
 }
 
 func (f *fakeSyncEngine) SetSelection(workspaceID, repoID string) {
@@ -316,18 +458,18 @@ func (f *fakeSyncEngine) RefreshNow(context.Context) (workspace.RepoStatus, erro
 	if f.selectedWorkspaceID != "" && f.selectedRepoID != "" {
 		f.refreshFetchCalls = append(f.refreshFetchCalls, selectionCall{workspaceID: f.selectedWorkspaceID, repoID: f.selectedRepoID})
 	}
-	return workspace.RepoStatus{}, nil
+	return f.refreshNowStatus, f.refreshNowErr
 }
 
 func (f *fakeSyncEngine) OnTick(context.Context) (workspace.RepoStatus, error) {
 	f.onTickCalls++
 	if !f.autoPolling {
-		return workspace.RepoStatus{}, nil
+		return f.onTickStatus, f.onTickErr
 	}
 	if f.selectedWorkspaceID != "" && f.selectedRepoID != "" {
 		f.tickFetchCalls = append(f.tickFetchCalls, selectionCall{workspaceID: f.selectedWorkspaceID, repoID: f.selectedRepoID})
 	}
-	return workspace.RepoStatus{}, nil
+	return f.onTickStatus, f.onTickErr
 }
 
 func (f *fakeSyncEngine) OnSelectionChanged(_ context.Context, workspaceID, repoID string) (workspace.RepoStatus, error) {
@@ -357,4 +499,12 @@ func (f *fakeSyncEngine) clearRefreshHistory() {
 	f.tickFetchCalls = nil
 	f.refreshNowCalls = 0
 	f.onTickCalls = 0
+}
+
+func mustBeRecentUTC(t *testing.T, got time.Time) {
+	t.Helper()
+	now := time.Now().UTC()
+	if got.Before(now.Add(-2*time.Minute)) || got.After(now.Add(2*time.Minute)) {
+		t.Fatalf("expected timestamp near now, got %s (now=%s)", got.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
 }

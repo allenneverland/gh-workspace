@@ -1,5 +1,7 @@
 package app
 
+import "github.com/allenneverland/gh-workspace/internal/domain/workspace"
+
 type MsgSelectWorkspace struct {
 	WorkspaceID string
 }
@@ -45,5 +47,8 @@ type MsgRefreshSelectedRepo struct{}
 type MsgToggleAutoPolling struct{}
 
 type MsgSyncRefreshCompleted struct {
-	Err error
+	WorkspaceID string
+	RepoID      string
+	Status      workspace.RepoStatus
+	Err         error
 }

@@ -26,7 +26,7 @@ func TestRightPane_UnconfiguredReleasePrecedence_OverridesStoredSnapshot(t *test
 		t.Run(string(storedRelease), func(t *testing.T) {
 			m := seededModelWithRepos()
 			m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ""
-			m.RepoStatusSnapshots = map[string]RepoStatusSnapshot{
+			m.State.Snapshot.RepoStatusSnapshots = map[string]workspace.RepoStatusSnapshot{
 				repoStatusSnapshotKey("ws-1", "repo-1"): {
 					Release: storedRelease,
 				},
@@ -45,7 +45,7 @@ func TestRightPane_UnconfiguredReleasePrecedence_OverridesStoredSnapshot(t *test
 func TestRightPane_RendersStatusAndLastSyncedAt(t *testing.T) {
 	m := seededModelWithRepos()
 	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
-	m.RepoStatusSnapshots = map[string]RepoStatusSnapshot{
+	m.State.Snapshot.RepoStatusSnapshots = map[string]workspace.RepoStatusSnapshot{
 		repoStatusSnapshotKey("ws-1", "repo-1"): {
 			PR:           workspace.StatusInProgress,
 			CI:           workspace.StatusFailure,
@@ -65,7 +65,7 @@ func TestRightPane_RendersStatusAndLastSyncedAt(t *testing.T) {
 func TestRightPane_RendersStaleBadgeAndLatestError(t *testing.T) {
 	m := seededModelWithRepos()
 	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
-	m.RepoStatusSnapshots = map[string]RepoStatusSnapshot{
+	m.State.Snapshot.RepoStatusSnapshots = map[string]workspace.RepoStatusSnapshot{
 		repoStatusSnapshotKey("ws-1", "repo-1"): {
 			PR:          workspace.StatusSuccess,
 			CI:          workspace.StatusSuccess,
@@ -85,7 +85,7 @@ func TestRightPane_RendersOnlySelectedRepoStatus(t *testing.T) {
 	m := seededModelWithRepos()
 	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
 	m.State.Snapshot.Workspaces[0].Repos[1].ReleaseWorkflowRef = ".github/workflows/release.yml"
-	m.RepoStatusSnapshots = map[string]RepoStatusSnapshot{
+	m.State.Snapshot.RepoStatusSnapshots = map[string]workspace.RepoStatusSnapshot{
 		repoStatusSnapshotKey("ws-1", "repo-1"): {
 			PR:      workspace.StatusFailure,
 			CI:      workspace.StatusFailure,

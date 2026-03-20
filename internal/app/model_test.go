@@ -1,6 +1,8 @@
 package app
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,5 +58,24 @@ func TestNewModel_InitialStateIsolation_DoesNotMutateInputState(t *testing.T) {
 	}
 	if initial.Workspaces[0].SelectedRepoID != "repo-1" {
 		t.Fatalf("expected original selected repo %q, got %q", "repo-1", initial.Workspaces[0].SelectedRepoID)
+	}
+}
+
+func TestModel_CenterTabs_IncludeWorktrees(t *testing.T) {
+	m := NewModel(Config{})
+
+	got := m.CenterTabs()
+	want := []Tab{TabOverview, TabWorktrees, TabLazygit, TabDiff}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected center tabs\nwant=%v\ngot=%v", want, got)
+	}
+}
+
+func TestView_RendersCenterTabListIncludingWorktrees(t *testing.T) {
+	m := NewModel(Config{})
+
+	view := m.View()
+	if !strings.Contains(view, "tabs: overview | worktrees | lazygit | diff") {
+		t.Fatalf("expected center tab list to include worktrees, got:\n%s", view)
 	}
 }

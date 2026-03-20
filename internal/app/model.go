@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -11,19 +10,27 @@ import (
 	lazygitadapter "github.com/allenneverland/gh-workspace/internal/adapters/lazygit"
 	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
+	storepkg "github.com/allenneverland/gh-workspace/internal/store"
 	syncengine "github.com/allenneverland/gh-workspace/internal/sync"
 )
 
 type Tab string
 
 const (
-	TabOverview Tab = "overview"
-	TabLazygit  Tab = "lazygit"
-	TabDiff     Tab = "diff"
+	TabOverview  Tab = "overview"
+	TabWorktrees Tab = "worktrees"
+	TabLazygit   Tab = "lazygit"
+	TabDiff      Tab = "diff"
 )
 
 type Config struct {
-	InitialState workspace.State
+	InitialState          workspace.State
+	WorktreeAdapter       WorktreeAdapter
+	LazygitSessionManager LazygitSessionManager
+	DiffRenderer          DiffRenderer
+	SyncEngine            SyncEngine
+	StateStore            storepkg.Store
+	SyncStatePublisher    SyncStatePublisher
 }
 
 type WorktreeItem struct {
@@ -62,18 +69,15 @@ type SyncEngine interface {
 	AutoPollingEnabled() bool
 }
 
+type SyncStatePublisher interface {
+	SetState(workspace.State)
+}
+
 type WorkspaceState struct {
 	Snapshot workspace.State
 }
 
-type RepoStatusSnapshot struct {
-	PR           workspace.Status
-	CI           workspace.Status
-	Release      workspace.Status
-	LastSyncedAt time.Time
-	IsStale      bool
-	LatestError  string
-}
+type RepoStatusSnapshot = workspace.RepoStatusSnapshot
 
 func NewWorkspaceState(st workspace.State) WorkspaceState {
 	state := WorkspaceState{Snapshot: cloneWorkspaceState(st)}
@@ -89,6 +93,7 @@ func cloneWorkspaceState(st workspace.State) workspace.State {
 		ws.Repos = append([]workspace.Repo(nil), ws.Repos...)
 		cloned.Workspaces[i] = ws
 	}
+	cloned.RepoStatusSnapshots = cloneRepoStatusSnapshots(st.RepoStatusSnapshots)
 	return cloned
 }
 
@@ -309,6 +314,8 @@ type Model struct {
 	Keys                         KeyMap
 	AddRepoRequested             bool
 	StatusMessage                string
+	StateStore                   storepkg.Store
+	SyncStatePublisher           SyncStatePublisher
 	WorktreeAdapter              WorktreeAdapter
 	Worktrees                    []WorktreeItem
 	LazygitSessionManager        LazygitSessionManager
@@ -316,28 +323,51 @@ type Model struct {
 	LazygitCenterFrameText       string
 	DiffRenderer                 DiffRenderer
 	SyncEngine                   SyncEngine
-	RepoStatusSnapshots          map[string]RepoStatusSnapshot
 	DiffOutput                   string
 	DiffStatus                   string
 	DiffLoading                  bool
 	diffRenderRequestID          int
+	diffRenderInFlight           bool
+	diffRenderPending            bool
+	syncCommandInFlight          bool
+	syncRefreshPending           bool
+	syncTickPending              bool
 	lazygitFrameListenerInFlight bool
 }
 
 func NewModel(config Config) Model {
-	return Model{
+	state := cloneWorkspaceState(config.InitialState)
+	if state.RepoStatusSnapshots == nil {
+		state.RepoStatusSnapshots = make(map[string]workspace.RepoStatusSnapshot)
+	}
+
+	m := Model{
 		ActiveTab:             TabOverview,
 		LeftPaneWidth:         30,
 		CenterPaneWidth:       80,
 		RightPaneWidth:        40,
-		State:                 NewWorkspaceState(config.InitialState),
+		State:                 NewWorkspaceState(state),
 		Keys:                  DefaultKeyMap(),
-		WorktreeAdapter:       appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
-		LazygitSessionManager: lazygitadapter.NewSessionManager(),
-		DiffRenderer:          diffadapter.NewRenderer(),
-		SyncEngine:            syncengine.NewEngine(noopStatusFetcher{}),
-		RepoStatusSnapshots:   make(map[string]RepoStatusSnapshot),
+		StateStore:            config.StateStore,
+		SyncStatePublisher:    config.SyncStatePublisher,
+		WorktreeAdapter:       config.WorktreeAdapter,
+		LazygitSessionManager: config.LazygitSessionManager,
+		DiffRenderer:          config.DiffRenderer,
+		SyncEngine:            config.SyncEngine,
 	}
+	if m.WorktreeAdapter == nil {
+		m.WorktreeAdapter = appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)}
+	}
+	if m.LazygitSessionManager == nil {
+		m.LazygitSessionManager = lazygitadapter.NewSessionManager()
+	}
+	if m.DiffRenderer == nil {
+		m.DiffRenderer = diffadapter.NewRenderer()
+	}
+	if m.SyncEngine == nil {
+		m.SyncEngine = syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{})
+	}
+	return publishSyncState(m)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -358,10 +388,13 @@ func (m Model) View() string {
 	return renderView(m)
 }
 
+func (m Model) CenterTabs() []Tab {
+	return []Tab{TabOverview, TabWorktrees, TabLazygit, TabDiff}
+}
+
 func (m Model) cloneForUpdate() Model {
 	cloned := m
 	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
-	cloned.RepoStatusSnapshots = cloneRepoStatusSnapshots(m.RepoStatusSnapshots)
 	return cloned
 }
 
@@ -398,7 +431,7 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	}
 
 	key := repoStatusSnapshotKey(m.State.CurrentWorkspaceID(), repo.ID)
-	stored, ok := m.RepoStatusSnapshots[key]
+	stored, ok := m.State.Snapshot.RepoStatusSnapshots[key]
 	if !ok {
 		if !hasReleaseWorkflow {
 			snapshot.Release = workspace.StatusUnconfigured
@@ -424,14 +457,48 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	return snapshot
 }
 
-type appWorktreeAdapter struct {
-	inner *worktreeadapter.Adapter
+func (m Model) repoStatusSnapshotByKey(workspaceID, repoID string) RepoStatusSnapshot {
+	if m.State.Snapshot.RepoStatusSnapshots == nil {
+		return RepoStatusSnapshot{}
+	}
+	return m.State.Snapshot.RepoStatusSnapshots[repoStatusSnapshotKey(workspaceID, repoID)]
 }
 
-type noopStatusFetcher struct{}
+func (m *Model) setRepoStatusSnapshot(workspaceID, repoID string, snapshot RepoStatusSnapshot) {
+	if m == nil {
+		return
+	}
+	if m.State.Snapshot.RepoStatusSnapshots == nil {
+		m.State.Snapshot.RepoStatusSnapshots = make(map[string]workspace.RepoStatusSnapshot)
+	}
+	m.State.Snapshot.RepoStatusSnapshots[repoStatusSnapshotKey(workspaceID, repoID)] = snapshot
+}
 
-func (noopStatusFetcher) FetchSelectedRepoStatus(context.Context, string, string) (workspace.RepoStatus, error) {
-	return workspace.RepoStatus{}, nil
+func publishSyncState(m Model) Model {
+	if m.SyncStatePublisher == nil {
+		return m
+	}
+	m.SyncStatePublisher.SetState(cloneWorkspaceState(m.State.Snapshot))
+	return m
+}
+
+func persistWorkspaceState(m Model) Model {
+	if m.StateStore == nil {
+		return m
+	}
+	if err := m.StateStore.Save(context.Background(), cloneWorkspaceState(m.State.Snapshot)); err != nil {
+		m.StatusMessage = "failed to persist state: " + err.Error()
+	}
+	return m
+}
+
+func persistAndPublishState(m Model) Model {
+	m = publishSyncState(m)
+	return persistWorkspaceState(m)
+}
+
+type appWorktreeAdapter struct {
+	inner *worktreeadapter.Adapter
 }
 
 func (a appWorktreeAdapter) Create(ctx context.Context, repoPath, branch, targetPath string) error {

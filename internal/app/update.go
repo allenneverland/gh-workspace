@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 
 	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
@@ -16,43 +17,47 @@ import (
 func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case MsgSelectWorkspace:
-		m.State.SelectWorkspace(msg.WorkspaceID)
-		syncCmd := syncOnSelectionChangedCmd(m)
+		if m.State.SelectWorkspace(msg.WorkspaceID) {
+			m = persistAndPublishState(m)
+		}
+		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
-			m = ensureLazygitSession(m)
-			next, lazygitCmd := scheduleLazygitFrameWait(m)
-			return next, tea.Batch(syncCmd, lazygitCmd)
+			next = ensureLazygitSession(next)
+			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
+			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
 		if m.ActiveTab == TabDiff {
-			next, diffCmd := requestDiffRender(m)
-			return next, tea.Batch(syncCmd, diffCmd)
+			afterDiff, diffCmd := requestDiffRender(next)
+			return afterDiff, tea.Batch(syncCmd, diffCmd)
 		}
-		return m, syncCmd
+		return next, syncCmd
 	case MsgSelectRepo:
-		m.State.SelectRepo(msg.RepoID)
-		syncCmd := syncOnSelectionChangedCmd(m)
+		if m.State.SelectRepo(msg.RepoID) {
+			m = persistAndPublishState(m)
+		}
+		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
-			m = ensureLazygitSession(m)
-			next, lazygitCmd := scheduleLazygitFrameWait(m)
-			return next, tea.Batch(syncCmd, lazygitCmd)
+			next = ensureLazygitSession(next)
+			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
+			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
 		if m.ActiveTab == TabDiff {
-			next, diffCmd := requestDiffRender(m)
-			return next, tea.Batch(syncCmd, diffCmd)
+			afterDiff, diffCmd := requestDiffRender(next)
+			return afterDiff, tea.Batch(syncCmd, diffCmd)
 		}
-		return m, syncCmd
+		return next, syncCmd
 	case MsgSyncStartup:
 		syncSetSelection(m)
-		return m, tea.Batch(syncRefreshNowCmd(m), scheduleSyncPolling(m))
+		m = publishSyncState(m)
+		next, syncCmd := requestSyncRefreshNow(m)
+		return next, tea.Batch(syncCmd, scheduleSyncPolling(next))
 	case MsgRefreshSelectedRepo:
 		syncSetSelection(m)
-		return m, syncRefreshNowCmd(m)
+		return requestSyncRefreshNow(m)
 	case MsgToggleAutoPolling:
 		return toggleAutoPolling(m)
 	case MsgSyncRefreshCompleted:
-		if msg.Err != nil {
-			m.StatusMessage = "failed to refresh selected repo: " + msg.Err.Error()
-		}
+		return handleSyncRefreshCompleted(m, msg)
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
@@ -81,9 +86,13 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if m.ActiveTab == TabDiff {
 			return m, nil
 		}
-		m = switchWorktree(m, msg)
+		var changed bool
+		m, changed = switchWorktree(m, msg)
+		if changed {
+			m = persistAndPublishState(m)
+		}
 	case MsgDiffRendered:
-		m = applyDiffRenderResult(m, msg)
+		return handleDiffRendered(m, msg)
 	case MsgLazygitFrame:
 		m.lazygitFrameListenerInFlight = false
 		if msg.SessionID == m.LazygitSessionID {
@@ -93,7 +102,9 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case MsgLazygitFrameClosed:
 		m.lazygitFrameListenerInFlight = false
 	case syncengine.MsgTick:
-		return m, tea.Batch(syncOnTickCmd(m), scheduleSyncPolling(m))
+		syncSetSelection(m)
+		next, syncCmd := requestSyncTick(m)
+		return next, tea.Batch(syncCmd, scheduleSyncPolling(next))
 	case tea.KeyMsg:
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
@@ -107,22 +118,31 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, m.Keys.RemoveRepo):
 			if removed, ok := m.State.RemoveCurrentRepo(); ok {
 				m.StatusMessage = "removed repo: " + removed.Name
-				return m, syncOnSelectionChangedCmd(m)
+				m = persistAndPublishState(m)
+				return syncOnSelectionChanged(m)
 			} else {
 				m.StatusMessage = "no selected repo to remove"
 			}
 		case key.Matches(msg, m.Keys.SelectRepo):
-			m = attemptRepoRecovery(m)
+			var changed bool
+			m, changed = attemptRepoRecovery(m)
+			if changed {
+				m = persistAndPublishState(m)
+			}
 		case key.Matches(msg, m.Keys.ManualRefresh):
 			return m, func() tea.Msg { return MsgRefreshSelectedRepo{} }
 		case key.Matches(msg, m.Keys.TogglePolling):
 			return m, func() tea.Msg { return MsgToggleAutoPolling{} }
 		case key.Matches(msg, m.Keys.NextWorkspace):
-			m.State.SelectNextWorkspace()
-			return m, syncOnSelectionChangedCmd(m)
+			if m.State.SelectNextWorkspace() {
+				m = persistAndPublishState(m)
+			}
+			return syncOnSelectionChanged(m)
 		case key.Matches(msg, m.Keys.PrevWorkspace):
-			m.State.SelectPrevWorkspace()
-			return m, syncOnSelectionChangedCmd(m)
+			if m.State.SelectPrevWorkspace() {
+				m = persistAndPublishState(m)
+			}
+			return syncOnSelectionChanged(m)
 		}
 	}
 
@@ -193,9 +213,9 @@ func diffTabBlocksMutatingKeys(m Model, msg tea.KeyMsg) bool {
 		key.Matches(msg, m.Keys.PrevWorkspace)
 }
 
-func syncOnSelectionChangedCmd(m Model) tea.Cmd {
+func syncOnSelectionChanged(m Model) (Model, tea.Cmd) {
 	syncSetSelection(m)
-	return syncRefreshNowCmd(m)
+	return requestSyncRefreshNow(m)
 }
 
 func syncSetSelection(m Model) {
@@ -209,10 +229,17 @@ func syncRefreshNowCmd(m Model) tea.Cmd {
 	if m.SyncEngine == nil {
 		return nil
 	}
+	workspaceID := m.State.CurrentWorkspaceID()
+	repoID := m.State.CurrentRepoID()
 
 	return func() tea.Msg {
-		_, err := m.SyncEngine.RefreshNow(context.Background())
-		return MsgSyncRefreshCompleted{Err: err}
+		status, err := m.SyncEngine.RefreshNow(context.Background())
+		return MsgSyncRefreshCompleted{
+			WorkspaceID: workspaceID,
+			RepoID:      repoID,
+			Status:      status,
+			Err:         err,
+		}
 	}
 }
 
@@ -220,11 +247,91 @@ func syncOnTickCmd(m Model) tea.Cmd {
 	if m.SyncEngine == nil {
 		return nil
 	}
+	workspaceID := m.State.CurrentWorkspaceID()
+	repoID := m.State.CurrentRepoID()
 
 	return func() tea.Msg {
-		_, err := m.SyncEngine.OnTick(context.Background())
-		return MsgSyncRefreshCompleted{Err: err}
+		status, err := m.SyncEngine.OnTick(context.Background())
+		return MsgSyncRefreshCompleted{
+			WorkspaceID: workspaceID,
+			RepoID:      repoID,
+			Status:      status,
+			Err:         err,
+		}
 	}
+}
+
+func requestSyncRefreshNow(m Model) (Model, tea.Cmd) {
+	if m.SyncEngine == nil {
+		return m, nil
+	}
+	if m.syncCommandInFlight {
+		m.syncRefreshPending = true
+		return m, nil
+	}
+	cmd := syncRefreshNowCmd(m)
+	if cmd == nil {
+		return m, nil
+	}
+	m.syncCommandInFlight = true
+	return m, cmd
+}
+
+func requestSyncTick(m Model) (Model, tea.Cmd) {
+	if m.SyncEngine == nil {
+		return m, nil
+	}
+	if m.syncCommandInFlight {
+		m.syncTickPending = true
+		return m, nil
+	}
+	cmd := syncOnTickCmd(m)
+	if cmd == nil {
+		return m, nil
+	}
+	m.syncCommandInFlight = true
+	return m, cmd
+}
+
+func handleSyncRefreshCompleted(m Model, msg MsgSyncRefreshCompleted) (Model, tea.Cmd) {
+	m.syncCommandInFlight = false
+	workspaceID := strings.TrimSpace(msg.WorkspaceID)
+	repoID := strings.TrimSpace(msg.RepoID)
+	if workspaceID != "" && repoID != "" {
+		snapshot := m.repoStatusSnapshotByKey(workspaceID, repoID)
+		if msg.Err != nil {
+			snapshot.IsStale = true
+			snapshot.LatestError = msg.Err.Error()
+		} else {
+			if msg.Status.PR != "" {
+				snapshot.PR = msg.Status.PR
+			}
+			if msg.Status.CI != "" {
+				snapshot.CI = msg.Status.CI
+			}
+			if msg.Status.Release != "" {
+				snapshot.Release = msg.Status.Release
+			}
+			snapshot.LastSyncedAt = time.Now().UTC()
+			snapshot.IsStale = false
+			snapshot.LatestError = ""
+		}
+		m.setRepoStatusSnapshot(workspaceID, repoID, snapshot)
+		m = persistAndPublishState(m)
+	}
+	if msg.Err != nil {
+		m.StatusMessage = "failed to refresh selected repo: " + msg.Err.Error()
+	}
+
+	if m.syncRefreshPending {
+		m.syncRefreshPending = false
+		return requestSyncRefreshNow(m)
+	}
+	if m.syncTickPending {
+		m.syncTickPending = false
+		return requestSyncTick(m)
+	}
+	return m, nil
 }
 
 func scheduleSyncPolling(m Model) tea.Cmd {
@@ -257,12 +364,20 @@ func requestDiffRender(m Model) (Model, tea.Cmd) {
 		m.DiffLoading = false
 		m.DiffOutput = ""
 		m.DiffStatus = ""
+		m.diffRenderInFlight = false
+		m.diffRenderPending = false
 		return m, nil
 	}
 	if m.DiffRenderer == nil {
 		m.DiffLoading = false
 		m.DiffOutput = ""
 		m.DiffStatus = "diff renderer unavailable"
+		m.diffRenderInFlight = false
+		m.diffRenderPending = false
+		return m, nil
+	}
+	if m.diffRenderInFlight {
+		m.diffRenderPending = true
 		return m, nil
 	}
 
@@ -271,6 +386,7 @@ func requestDiffRender(m Model) (Model, tea.Cmd) {
 	repoPath := repo.Path
 	m.DiffLoading = true
 	m.DiffStatus = ""
+	m.diffRenderInFlight = true
 
 	return m, func() tea.Msg {
 		out, err := m.DiffRenderer.Render(context.Background(), repoPath)
@@ -288,6 +404,7 @@ func applyDiffRenderResult(m Model, msg MsgDiffRendered) Model {
 	}
 
 	m.DiffLoading = false
+	m.diffRenderInFlight = false
 	if msg.Err != nil {
 		m.DiffOutput = ""
 		if errors.Is(msg.Err, diffadapter.ErrDeltaNotFound) {
@@ -306,6 +423,19 @@ func applyDiffRenderResult(m Model, msg MsgDiffRendered) Model {
 
 	m.DiffStatus = ""
 	return m
+}
+
+func handleDiffRendered(m Model, msg MsgDiffRendered) (Model, tea.Cmd) {
+	m = applyDiffRenderResult(m, msg)
+	if msg.RequestID != m.diffRenderRequestID {
+		return m, nil
+	}
+	if m.diffRenderPending && m.ActiveTab == TabDiff {
+		m.diffRenderPending = false
+		return requestDiffRender(m)
+	}
+	m.diffRenderPending = false
+	return m, nil
 }
 
 func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
@@ -400,41 +530,41 @@ func createWorktree(m Model, msg MsgCreateWorktree) Model {
 	return m
 }
 
-func switchWorktree(m Model, msg MsgSwitchWorktree) Model {
+func switchWorktree(m Model, msg MsgSwitchWorktree) (Model, bool) {
 	repo, ok := m.State.CurrentRepo()
 	if !ok {
 		m.StatusMessage = "no selected repo for worktree switch"
-		return m
+		return m, false
 	}
 	if m.WorktreeAdapter == nil {
 		m.StatusMessage = "worktree adapter unavailable"
-		return m
+		return m, false
 	}
 
 	worktrees, err := m.WorktreeAdapter.List(context.Background(), repo.Path)
 	if err != nil {
 		m.StatusMessage = "failed to list worktrees: " + err.Error()
-		return m
+		return m, false
 	}
 	m.Worktrees = worktrees
 
 	selected, exists := findWorktreeByPath(worktrees, msg.WorktreePath)
 	if !exists {
 		m.StatusMessage = "worktree not found in list: " + msg.WorktreePath
-		return m
+		return m, false
 	}
 
 	if err := m.WorktreeAdapter.ValidateSwitchTarget(context.Background(), msg.WorktreePath); err != nil {
 		m.StatusMessage = "failed to validate worktree target: " + err.Error()
-		return m
+		return m, false
 	}
 
 	if !m.State.SetRepoSelectedWorktree(m.State.CurrentWorkspaceID(), repo.ID, selected.ID, selected.Path) {
 		m.StatusMessage = "failed to persist selected worktree"
-		return m
+		return m, false
 	}
 	m.StatusMessage = "switched worktree: " + selected.Path
-	return m
+	return m, true
 }
 
 func findWorktreeByPath(worktrees []WorktreeItem, path string) (WorktreeItem, bool) {
@@ -446,26 +576,26 @@ func findWorktreeByPath(worktrees []WorktreeItem, path string) (WorktreeItem, bo
 	return WorktreeItem{}, false
 }
 
-func attemptRepoRecovery(m Model) Model {
+func attemptRepoRecovery(m Model) (Model, bool) {
 	repo, ok := m.State.CurrentRepo()
 	if !ok {
 		m.StatusMessage = "no selected repo to recover"
-		return m
+		return m, false
 	}
 
 	if repo.Health != workspace.RepoInvalid {
 		m.StatusMessage = "selected repo is already healthy"
-		return m
+		return m, false
 	}
 
 	if pathExists(repo.Path) {
 		m.State.SetCurrentRepoHealth(workspace.RepoHealthy)
 		m.StatusMessage = "repo path recovered: " + repo.Path
-		return m
+		return m, true
 	}
 
 	m.StatusMessage = "repo path still invalid: " + repo.Path
-	return m
+	return m, false
 }
 
 func pathExists(path string) bool {

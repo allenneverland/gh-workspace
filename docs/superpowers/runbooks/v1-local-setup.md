@@ -24,14 +24,17 @@ git --version
 
 ## Current Runtime Scope (Important)
 
-The current default runtime in this branch uses a no-op status fetcher at startup. This means:
+The default runtime is GitHub-backed and persists state on disk:
 
-- right-pane PR/CI/Release cards do not perform live GitHub fetches by default
-- status cards stay on local/default values (`neutral` / `unconfigured`) unless a real GitHub adapter is wired in
+- selected-repo PR/CI/Release refresh uses `gh` CLI via your existing `gh auth` session
+- workspace selection and sync snapshots are persisted in BoltDB
+- default store path: `${XDG_CONFIG_HOME:-~/.config}/gh-workspace/state.db`
+- optional override path: `WORKSPACE_TUI_STATE_PATH`
+- test fallback mode (`WORKSPACE_TUI_TEST_MODE=1`) uses no-op sync and skips persistent runtime wiring
 
-## GitHub Authentication Requirement (When GitHub Adapter Is Enabled)
+## GitHub Authentication Requirement
 
-For builds/configurations that wire the GitHub status adapter, the app reuses your local GitHub CLI authentication context.
+The app reuses your local GitHub CLI authentication context.
 
 ```bash
 gh auth login
@@ -47,7 +50,7 @@ Release tracking depends on each repo’s `releaseWorkflowRef` value.
 - Use a workflow file path (for example: `.github/workflows/release.yml`) or workflow ID.
 - This value is stored per repo in workspace state.
 - If `releaseWorkflowRef` is empty, Release status is shown as `unconfigured`.
-- In the current default no-op runtime, this is configuration/preflight state only; live Release workflow status requires a GitHub-backed status adapter.
+- In test fallback mode (`WORKSPACE_TUI_TEST_MODE=1`), live GitHub sync is intentionally disabled.
 
 ## Run Locally
 

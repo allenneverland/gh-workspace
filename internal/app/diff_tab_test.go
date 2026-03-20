@@ -122,6 +122,55 @@ func TestUpdate_DiffTab_RefreshMessage_TriggersRefetch(t *testing.T) {
 	}
 }
 
+func TestUpdate_DiffTab_Backpressure_DropsOverlappingRefreshRequestsAndRunsSingleFollowup(t *testing.T) {
+	m := seededModelWithRepos()
+	renderer := &fakeDiffRenderer{
+		outputs: []string{
+			"@@ first @@",
+			"@@ second @@",
+		},
+	}
+	m.DiffRenderer = renderer
+
+	entered, firstCmd := m.Update(MsgSetActiveTab{Tab: TabDiff})
+	first := entered.(Model)
+	if firstCmd == nil {
+		t.Fatal("expected first diff fetch command")
+	}
+
+	secondUpdated, secondCmd := first.Update(MsgRefreshDiff{})
+	second := secondUpdated.(Model)
+	if secondCmd != nil {
+		t.Fatal("expected overlapping refresh to be backpressured while first request is in flight")
+	}
+	if !second.DiffLoading {
+		t.Fatal("expected diff loading to remain true while first request is in flight")
+	}
+
+	firstResult := firstCmd()
+	afterFirstResult, followupCmd := second.Update(firstResult)
+	mid := afterFirstResult.(Model)
+	if followupCmd == nil {
+		t.Fatal("expected exactly one queued diff refresh command after first completion")
+	}
+	if mid.DiffOutput != "@@ first @@" {
+		t.Fatalf("expected first diff output before queued refresh runs, got %q", mid.DiffOutput)
+	}
+
+	secondResult := followupCmd()
+	finalUpdated, finalCmd := mid.Update(secondResult)
+	final := finalUpdated.(Model)
+	if finalCmd != nil {
+		t.Fatal("expected no additional command after queued diff refresh completes")
+	}
+	if final.DiffOutput != "@@ second @@" {
+		t.Fatalf("expected second diff output after queued refresh, got %q", final.DiffOutput)
+	}
+	if len(renderer.calls) != 2 {
+		t.Fatalf("expected exactly two renderer calls (first + queued), got %d", len(renderer.calls))
+	}
+}
+
 func TestUpdate_DiffTab_MutatingKeysAndActions_DoNothing(t *testing.T) {
 	m := NewModel(Config{
 		InitialState: workspace.State{

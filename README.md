@@ -12,9 +12,10 @@ Bubble Tea TUI for multi-workspace repo operations and selected-repo PR/CI/Relea
 go run ./cmd/tui
 ```
 
-4. Current runtime behavior in this branch:
-- status sync defaults to a no-op fetcher, so right-pane PR/CI/Release does not query GitHub by default
-- for GitHub-backed status sync, configure `gh auth` and repo `releaseWorkflowRef` as described in the runbook
+4. Runtime behavior:
+- status sync is GitHub-backed by default (uses your `gh auth` context and per-repo `releaseWorkflowRef`)
+- state persists across runs in a local BoltDB file (default path: `${XDG_CONFIG_HOME:-~/.config}/gh-workspace/state.db`)
+- test fallback mode (`WORKSPACE_TUI_TEST_MODE=1`) uses no-op sync and skips persistent runtime wiring
 
 5. Runtime basics:
 - `enter` attempts invalid-path recovery for the current repo

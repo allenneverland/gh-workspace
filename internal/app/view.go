@@ -11,8 +11,15 @@ func renderView(m Model) string {
 	var out strings.Builder
 	out.WriteString(m.renderLeftPane())
 	out.WriteString("\n\nCenter")
+	out.WriteString("\n" + m.renderCenterTabs())
 	out.WriteString("\nactive tab: " + string(m.ActiveTab))
 	switch m.ActiveTab {
+	case TabOverview:
+		out.WriteString("\n")
+		out.WriteString("overview ready")
+	case TabWorktrees:
+		out.WriteString("\n")
+		out.WriteString(m.renderWorktreesCenter())
 	case TabLazygit:
 		out.WriteString("\n")
 		out.WriteString(m.renderLazygitCenter())
@@ -23,6 +30,14 @@ func renderView(m Model) string {
 	out.WriteString("\n\n")
 	out.WriteString(m.renderRightPane())
 	return out.String()
+}
+
+func (m Model) renderCenterTabs() string {
+	labels := make([]string, 0, len(m.CenterTabs()))
+	for _, tab := range m.CenterTabs() {
+		labels = append(labels, string(tab))
+	}
+	return "tabs: " + strings.Join(labels, " | ")
 }
 
 func (m Model) renderLeftPane() string {
@@ -118,6 +133,37 @@ func (m Model) renderDiffCenter() string {
 		return m.DiffStatus
 	}
 	return m.DiffOutput
+}
+
+func (m Model) renderWorktreesCenter() string {
+	if len(m.Worktrees) == 0 {
+		return "No worktrees loaded. Use create/switch actions from left pane."
+	}
+
+	selectedID := ""
+	selectedPath := ""
+	if repo, ok := m.State.CurrentRepo(); ok {
+		selectedID = repo.SelectedWorktreeID
+		selectedPath = repo.SelectedWorktreePath
+	}
+
+	var out strings.Builder
+	out.WriteString("Worktrees tab\n")
+	for _, wt := range m.Worktrees {
+		marker := "  "
+		if wt.ID == selectedID || wt.Path == selectedPath {
+			marker = "> "
+		}
+		label := wt.ID
+		if label == "" {
+			label = wt.Path
+		}
+		if wt.Branch != "" {
+			label += " (" + wt.Branch + ")"
+		}
+		out.WriteString(marker + label + "\n")
+	}
+	return strings.TrimSpace(out.String())
 }
 
 func (m Model) renderRightPane() string {
