@@ -346,7 +346,7 @@ git commit -m "feat: add worktree adapter and worktrees tab actions"
 - Modify: `internal/app/messages.go`
 - Test: `internal/app/lazygit_tab_test.go`
 
-- [x] **Step 1: Write failing tests for no-repo and spawn behavior**
+- [ ] **Step 1: Write failing tests for no-repo and spawn behavior**
 
 ```go
 func TestLazygitTab_NoRepo_ShowsPrompt(t *testing.T) {
@@ -372,12 +372,12 @@ func TestLazygitTab_ForwardsInputToPTY(t *testing.T) {
 }
 ```
 
-- [x] **Step 2: Run tests and verify failure**
+- [ ] **Step 2: Run tests and verify failure**
 
 Run: `go test ./internal/app ./internal/adapters/lazygit -run Lazygit -v`  
 Expected: FAIL with missing session manager.
 
-- [x] **Step 3: Implement PTY-backed session manager with I/O bridge**
+- [ ] **Step 3: Implement PTY-backed session manager with I/O bridge**
 
 ```go
 func (m *Manager) Start(ctx context.Context, repoPath string) (SessionID, error) {
@@ -392,7 +392,7 @@ func (m *Manager) WriteInput(id SessionID, b []byte) error {
 }
 ```
 
-- [x] **Step 4: Wire tab switch + PTY output rendering + key forwarding**
+- [ ] **Step 4: Wire tab switch + PTY output rendering + key forwarding**
 
 Implement:
 
@@ -400,12 +400,12 @@ Implement:
 - Center pane lazygit renderer consuming latest frame buffer
 - Key forwarding to PTY only when active tab is `TabLazygit`
 
-- [x] **Step 5: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run: `go test ./internal/adapters/lazygit ./internal/app -run Lazygit -v`  
 Expected: PASS.
 
-- [x] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/adapters/lazygit internal/app/update.go internal/app/view.go internal/app/lazygit_tab_test.go
