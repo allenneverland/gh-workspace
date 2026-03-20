@@ -12,6 +12,12 @@ func renderView(m Model) string {
 
 func (m Model) renderLeftPane() string {
 	var out strings.Builder
+	selectedWorktreeID := ""
+	selectedWorktreePath := ""
+	if repo, ok := m.State.CurrentRepo(); ok {
+		selectedWorktreeID = repo.SelectedWorktreeID
+		selectedWorktreePath = repo.SelectedWorktreePath
+	}
 
 	out.WriteString("Workspaces\n")
 	for _, ws := range m.State.Snapshot.Workspaces {
@@ -43,7 +49,7 @@ func (m Model) renderLeftPane() string {
 	} else {
 		for _, wt := range m.Worktrees {
 			marker := "  "
-			if wt.ID == m.SelectedWorktreeID || wt.Path == m.SelectedWorktreePath {
+			if wt.ID == selectedWorktreeID || wt.Path == selectedWorktreePath {
 				marker = "> "
 			}
 			label := wt.ID
@@ -57,8 +63,8 @@ func (m Model) renderLeftPane() string {
 		}
 	}
 
-	if m.SelectedWorktreePath != "" {
-		out.WriteString("\nselected worktree: " + m.SelectedWorktreePath)
+	if selectedWorktreePath != "" {
+		out.WriteString("\nselected worktree: " + selectedWorktreePath)
 	}
 	out.WriteString("\nworktree actions: create/switch")
 

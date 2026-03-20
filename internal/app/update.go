@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 
-	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -81,9 +80,11 @@ func createWorktree(m Model, msg MsgCreateWorktree) Model {
 	}
 
 	worktrees, err := m.WorktreeAdapter.List(context.Background(), repo.Path)
-	if err == nil {
-		m.Worktrees = worktrees
+	if err != nil {
+		m.StatusMessage = "failed to refresh worktrees after create: " + err.Error()
+		return m
 	}
+	m.Worktrees = worktrees
 
 	m.StatusMessage = "created worktree: " + msg.Path
 	return m
@@ -118,19 +119,21 @@ func switchWorktree(m Model, msg MsgSwitchWorktree) Model {
 		return m
 	}
 
-	m.SelectedWorktreeID = selected.ID
-	m.SelectedWorktreePath = selected.Path
+	if !m.State.SetRepoSelectedWorktree(m.State.CurrentWorkspaceID(), repo.ID, selected.ID, selected.Path) {
+		m.StatusMessage = "failed to persist selected worktree"
+		return m
+	}
 	m.StatusMessage = "switched worktree: " + selected.Path
 	return m
 }
 
-func findWorktreeByPath(worktrees []worktreeadapter.Entry, path string) (worktreeadapter.Entry, bool) {
+func findWorktreeByPath(worktrees []WorktreeItem, path string) (WorktreeItem, bool) {
 	for _, wt := range worktrees {
 		if wt.Path == path {
 			return wt, true
 		}
 	}
-	return worktreeadapter.Entry{}, false
+	return WorktreeItem{}, false
 }
 
 func attemptRepoRecovery(m Model) Model {

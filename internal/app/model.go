@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	worktreeadapter "github.com/allenneverland/gh-workspace/internal/adapters/worktree"
@@ -18,9 +19,16 @@ type Config struct {
 	InitialState workspace.State
 }
 
+type WorktreeItem struct {
+	ID     string
+	Path   string
+	Branch string
+	Commit string
+}
+
 type WorktreeAdapter interface {
 	Create(ctx context.Context, repoPath, branch, targetPath string) error
-	List(ctx context.Context, repoPath string) ([]worktreeadapter.Entry, error)
+	List(ctx context.Context, repoPath string) ([]WorktreeItem, error)
 	ValidateSwitchTarget(ctx context.Context, worktreePath string) error
 }
 
@@ -176,6 +184,21 @@ func (s *WorkspaceState) SetCurrentRepoHealth(health workspace.RepoHealth) bool 
 	return true
 }
 
+func (s *WorkspaceState) SetRepoSelectedWorktree(workspaceID, repoID, worktreeID, worktreePath string) bool {
+	workspaceIdx := findWorkspaceIndex(s.Snapshot.Workspaces, workspaceID)
+	if workspaceIdx < 0 {
+		return false
+	}
+	repoIdx := findRepoIndex(s.Snapshot.Workspaces[workspaceIdx].Repos, repoID)
+	if repoIdx < 0 {
+		return false
+	}
+
+	s.Snapshot.Workspaces[workspaceIdx].Repos[repoIdx].SelectedWorktreeID = worktreeID
+	s.Snapshot.Workspaces[workspaceIdx].Repos[repoIdx].SelectedWorktreePath = worktreePath
+	return true
+}
+
 func (s *WorkspaceState) ensureSelection() {
 	if len(s.Snapshot.Workspaces) == 0 {
 		s.Snapshot.SelectedWorkspaceID = ""
@@ -239,18 +262,16 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 }
 
 type Model struct {
-	ActiveTab            Tab
-	LeftPaneWidth        int
-	CenterPaneWidth      int
-	RightPaneWidth       int
-	State                WorkspaceState
-	Keys                 KeyMap
-	AddRepoRequested     bool
-	StatusMessage        string
-	WorktreeAdapter      WorktreeAdapter
-	Worktrees            []worktreeadapter.Entry
-	SelectedWorktreeID   string
-	SelectedWorktreePath string
+	ActiveTab        Tab
+	LeftPaneWidth    int
+	CenterPaneWidth  int
+	RightPaneWidth   int
+	State            WorkspaceState
+	Keys             KeyMap
+	AddRepoRequested bool
+	StatusMessage    string
+	WorktreeAdapter  WorktreeAdapter
+	Worktrees        []WorktreeItem
 }
 
 func NewModel(config Config) Model {
@@ -261,7 +282,7 @@ func NewModel(config Config) Model {
 		RightPaneWidth:  40,
 		State:           NewWorkspaceState(config.InitialState),
 		Keys:            DefaultKeyMap(),
-		WorktreeAdapter: worktreeadapter.NewAdapter(nil),
+		WorktreeAdapter: appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)},
 	}
 }
 
@@ -282,4 +303,34 @@ func (m Model) cloneForUpdate() Model {
 	cloned := m
 	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
 	return cloned
+}
+
+type appWorktreeAdapter struct {
+	inner *worktreeadapter.Adapter
+}
+
+func (a appWorktreeAdapter) Create(ctx context.Context, repoPath, branch, targetPath string) error {
+	return a.inner.Create(ctx, repoPath, branch, targetPath)
+}
+
+func (a appWorktreeAdapter) List(ctx context.Context, repoPath string) ([]WorktreeItem, error) {
+	entries, err := a.inner.List(ctx, repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]WorktreeItem, len(entries))
+	for i := range entries {
+		items[i] = WorktreeItem{
+			ID:     entries[i].ID,
+			Path:   entries[i].Path,
+			Branch: entries[i].Branch,
+			Commit: entries[i].Commit,
+		}
+	}
+	return items, nil
+}
+
+func (a appWorktreeAdapter) ValidateSwitchTarget(ctx context.Context, worktreePath string) error {
+	return a.inner.ValidateSwitchTarget(ctx, worktreePath)
 }

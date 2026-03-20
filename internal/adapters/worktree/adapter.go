@@ -19,6 +19,7 @@ type Entry struct {
 	ID     string
 	Path   string
 	Branch string
+	Commit string
 }
 
 func NewAdapter(runner Runner) *Adapter {
@@ -29,12 +30,12 @@ func NewAdapter(runner Runner) *Adapter {
 }
 
 func (a *Adapter) Create(ctx context.Context, repoPath, branch, targetPath string) error {
-	_, err := a.runner.Run(ctx, "git", "-C", repoPath, "worktree", "add", targetPath, branch)
+	_, err := a.runGit(ctx, "-C", repoPath, "worktree", "add", targetPath, branch)
 	return err
 }
 
 func (a *Adapter) List(ctx context.Context, repoPath string) ([]Entry, error) {
-	out, err := a.runner.Run(ctx, "git", "-C", repoPath, "worktree", "list", "--porcelain")
+	out, err := a.runGit(ctx, "-C", repoPath, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +43,7 @@ func (a *Adapter) List(ctx context.Context, repoPath string) ([]Entry, error) {
 }
 
 func (a *Adapter) ValidateSwitchTarget(ctx context.Context, worktreePath string) error {
-	out, err := a.runner.Run(ctx, "git", "-C", worktreePath, "rev-parse", "--is-inside-work-tree")
+	out, err := a.runGit(ctx, "-C", worktreePath, "rev-parse", "--is-inside-work-tree")
 	if err != nil {
 		return err
 	}
@@ -94,10 +95,29 @@ func parsePorcelainList(raw string) []Entry {
 			branch := strings.TrimPrefix(line, "branch ")
 			branch = strings.TrimPrefix(branch, "refs/heads/")
 			current.Branch = branch
+		case strings.HasPrefix(line, "HEAD "):
+			if !hasCurrent {
+				continue
+			}
+			current.Commit = strings.TrimPrefix(line, "HEAD ")
 		}
 	}
 	flush()
 	return entries
+}
+
+func (a *Adapter) runGit(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := a.runner.Run(ctx, "git", args...)
+	if err == nil {
+		return out, nil
+	}
+
+	command := "git " + strings.Join(args, " ")
+	output := strings.TrimSpace(string(out))
+	if output == "" {
+		return nil, fmt.Errorf("%s failed: %w", command, err)
+	}
+	return nil, fmt.Errorf("%s failed: %w: %s", command, err, output)
 }
 
 type commandRunner struct{}
