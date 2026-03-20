@@ -39,6 +39,7 @@ type Config struct {
 	SyncEngine            SyncEngine
 	StateStore            storepkg.Store
 	SyncStatePublisher    SyncStatePublisher
+	RepoPathSubmitter     RepoPathSubmitter
 }
 
 type WorktreeItem struct {
@@ -79,6 +80,15 @@ type SyncEngine interface {
 
 type SyncStatePublisher interface {
 	SetState(workspace.State)
+}
+
+type RepoPathSubmissionResult struct {
+	State         workspace.State
+	StatusMessage string
+}
+
+type RepoPathSubmitter interface {
+	SubmitRepoPath(ctx context.Context, path string) (RepoPathSubmissionResult, error)
 }
 
 type WorkspaceState struct {
@@ -362,9 +372,12 @@ type Model struct {
 	State                        WorkspaceState
 	Keys                         KeyMap
 	AddRepoRequested             bool
+	RepoPathInput                RepoPathInput
+	RepoPathInputActive          bool
 	StatusMessage                string
 	StateStore                   storepkg.Store
 	SyncStatePublisher           SyncStatePublisher
+	RepoPathSubmitter            RepoPathSubmitter
 	WorktreeAdapter              WorktreeAdapter
 	Worktrees                    []WorktreeItem
 	LazygitSessionManager        LazygitSessionManager
@@ -403,8 +416,10 @@ func NewModel(config Config) Model {
 		RightPaneWidth:        40,
 		State:                 NewWorkspaceState(state),
 		Keys:                  DefaultKeyMap(),
+		RepoPathInput:         newRepoPathInput(),
 		StateStore:            config.StateStore,
 		SyncStatePublisher:    config.SyncStatePublisher,
+		RepoPathSubmitter:     config.RepoPathSubmitter,
 		WorktreeAdapter:       config.WorktreeAdapter,
 		LazygitSessionManager: config.LazygitSessionManager,
 		DiffRenderer:          config.DiffRenderer,
