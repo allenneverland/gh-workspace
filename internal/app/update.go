@@ -99,13 +99,11 @@ func ensureLazygitSession(m Model) Model {
 func clearLazygitSessionState(m Model) Model {
 	m.LazygitSessionID = ""
 	m.LazygitCenterFrameText = ""
-	m.lazygitFrameListenerInFlight = false
 	return m
 }
 
 func scheduleLazygitFrameWait(m Model) (Model, tea.Cmd) {
 	if m.ActiveTab != TabLazygit || m.LazygitSessionManager == nil || m.LazygitSessionID == "" {
-		m.lazygitFrameListenerInFlight = false
 		return m, nil
 	}
 	if m.lazygitFrameListenerInFlight {

@@ -183,6 +183,53 @@ func TestUpdate_LazygitTab_StartFailure_ClearsSessionState(t *testing.T) {
 	}
 }
 
+func TestUpdate_LazygitTab_InFlightListener_PersistsAcrossStartFailureWithoutDuplicateWaiters(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	manager.startErrByRepo["/tmp/web"] = errors.New("boom")
+	m.LazygitSessionManager = manager
+
+	enteredTab, firstCmd := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	first := enteredTab.(Model)
+	if firstCmd == nil {
+		t.Fatal("expected initial lazygit frame wait command")
+	}
+	if got := atomic.LoadInt32(&manager.framesCalls); got != 1 {
+		t.Fatalf("expected one frame subscription, got %d", got)
+	}
+
+	afterFailure, failureCmd := first.Update(MsgSelectRepo{RepoID: "repo-2"})
+	failed := afterFailure.(Model)
+	if failureCmd != nil {
+		t.Fatal("expected no new wait command on start failure with listener already in flight")
+	}
+	if failed.LazygitSessionID != "" {
+		t.Fatalf("expected session id cleared after start failure, got %q", failed.LazygitSessionID)
+	}
+	if !failed.lazygitFrameListenerInFlight {
+		t.Fatal("expected in-flight listener flag to remain true while original waiter is still blocked")
+	}
+	if got := atomic.LoadInt32(&manager.framesCalls); got != 1 {
+		t.Fatalf("expected frame subscription count to remain 1 after failure, got %d", got)
+	}
+
+	afterRestart, restartCmd := failed.Update(MsgSelectRepo{RepoID: "repo-1"})
+	restarted := afterRestart.(Model)
+	if restartCmd != nil {
+		t.Fatal("expected no duplicate wait command while previous waiter remains in flight")
+	}
+	if restarted.LazygitSessionID != "session-api" {
+		t.Fatalf("expected session restart for repo-1, got %q", restarted.LazygitSessionID)
+	}
+	if got := atomic.LoadInt32(&manager.framesCalls); got != 1 {
+		t.Fatalf("expected still one frame subscription after restart attempt, got %d", got)
+	}
+}
+
 func TestUpdate_LazygitFrameMessage_RendersInView(t *testing.T) {
 	m := seededModelWithRepos()
 	manager := newFakeLazygitSessionManager()
