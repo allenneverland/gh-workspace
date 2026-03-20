@@ -23,8 +23,16 @@ const (
 	TabDiff      Tab = "diff"
 )
 
+type UIMode string
+
+const (
+	ModeWorkspace UIMode = "workspace"
+	ModeFolder    UIMode = "folder"
+)
+
 type Config struct {
 	InitialState          workspace.State
+	InitialUIMode         UIMode
 	WorktreeAdapter       WorktreeAdapter
 	LazygitSessionManager LazygitSessionManager
 	DiffRenderer          DiffRenderer
@@ -307,6 +315,7 @@ func findRepoIndex(repos []workspace.Repo, repoID string) int {
 
 type Model struct {
 	ActiveTab                    Tab
+	UIMode                       UIMode
 	LeftPaneWidth                int
 	CenterPaneWidth              int
 	RightPaneWidth               int
@@ -341,8 +350,14 @@ func NewModel(config Config) Model {
 		state.RepoStatusSnapshots = make(map[string]workspace.RepoStatusSnapshot)
 	}
 
+	mode := config.InitialUIMode
+	if mode == "" {
+		mode = ModeWorkspace
+	}
+
 	m := Model{
 		ActiveTab:             TabOverview,
+		UIMode:                mode,
 		LeftPaneWidth:         30,
 		CenterPaneWidth:       80,
 		RightPaneWidth:        40,
