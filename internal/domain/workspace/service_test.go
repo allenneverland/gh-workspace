@@ -94,6 +94,49 @@ func TestService_CreateWorkspace_SupportsMultipleWorkspaces(t *testing.T) {
 	}
 }
 
+func TestService_DeleteWorkspace_RemovesWorkspaceAndUpdatesSelection(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	first, err := svc.CreateWorkspace("first")
+	if err != nil {
+		t.Fatalf("CreateWorkspace(first) error = %v", err)
+	}
+	second, err := svc.CreateWorkspace("second")
+	if err != nil {
+		t.Fatalf("CreateWorkspace(second) error = %v", err)
+	}
+
+	if err := svc.DeleteWorkspace(first.ID); err != nil {
+		t.Fatalf("DeleteWorkspace(first) error = %v", err)
+	}
+
+	reloaded := NewService(mem)
+	state, err := reloaded.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected one workspace after deletion, got %d", len(state.Workspaces))
+	}
+	if state.Workspaces[0].ID != second.ID {
+		t.Fatalf("expected remaining workspace %q, got %q", second.ID, state.Workspaces[0].ID)
+	}
+	if state.SelectedWorkspaceID != second.ID {
+		t.Fatalf("expected selected workspace %q after deletion, got %q", second.ID, state.SelectedWorkspaceID)
+	}
+}
+
+func TestService_DeleteWorkspace_ReturnsErrorWhenWorkspaceMissing(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	if err := svc.DeleteWorkspace("missing"); err == nil {
+		t.Fatal("DeleteWorkspace(missing) error = nil, want non-nil")
+	}
+}
+
 type memoryStore struct {
 	state State
 }

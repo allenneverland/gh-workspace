@@ -102,6 +102,28 @@ func (s *Service) AddRepo(workspaceID string, input RepoInput) (Repo, error) {
 	return repo, nil
 }
 
+func (s *Service) DeleteWorkspace(workspaceID string) error {
+	state, err := s.LoadState()
+	if err != nil {
+		return err
+	}
+
+	workspaceIdx := findWorkspaceIndex(state.Workspaces, workspaceID)
+	if workspaceIdx < 0 {
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
+	}
+
+	state.Workspaces = append(state.Workspaces[:workspaceIdx], state.Workspaces[workspaceIdx+1:]...)
+	switch {
+	case len(state.Workspaces) == 0:
+		state.SelectedWorkspaceID = ""
+	case state.SelectedWorkspaceID == workspaceID:
+		state.SelectedWorkspaceID = state.Workspaces[0].ID
+	}
+
+	return s.store.Save(context.Background(), state)
+}
+
 func (s *Service) SelectRepo(workspaceID, repoID string) error {
 	state, err := s.LoadState()
 	if err != nil {
