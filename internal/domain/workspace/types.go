@@ -1,6 +1,9 @@
 package workspace
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type State struct {
 	SelectedWorkspaceID string      `json:"selected_workspace_id"`
@@ -32,4 +35,44 @@ type RepoInput struct {
 	Path               string
 	DefaultBranch      string
 	ReleaseWorkflowRef string
+}
+
+type Status string
+
+const (
+	StatusSuccess      Status = "success"
+	StatusFailure      Status = "failure"
+	StatusNeutral      Status = "neutral"
+	StatusInProgress   Status = "in_progress"
+	StatusUnconfigured Status = "unconfigured"
+)
+
+type RepoStatus struct {
+	PR      Status `json:"pr"`
+	CI      Status `json:"ci"`
+	Release Status `json:"release"`
+}
+
+func StatusFromGitHubRun(status, conclusion string) Status {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running", "in_progress", "queued":
+		return StatusInProgress
+	case "success":
+		return StatusSuccess
+	case "failure":
+		return StatusFailure
+	case "cancelled", "skipped":
+		return StatusNeutral
+	}
+
+	switch strings.ToLower(strings.TrimSpace(conclusion)) {
+	case "success":
+		return StatusSuccess
+	case "failure":
+		return StatusFailure
+	case "cancelled", "skipped":
+		return StatusNeutral
+	}
+
+	return StatusNeutral
 }

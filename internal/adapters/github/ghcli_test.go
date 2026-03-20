@@ -1,0 +1,153 @@
+package github
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
+)
+
+func TestAdapter_CheckAuth_UsesGhAuthStatus(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := NewAdapter(runner)
+
+	if err := adapter.CheckAuth(context.Background()); err != nil {
+		t.Fatalf("CheckAuth() error = %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(runner.calls))
+	}
+
+	want := commandCall{
+		name: "gh",
+		args: []string{"auth", "status", "--hostname", "github.com"},
+	}
+	if !reflect.DeepEqual(runner.calls[0], want) {
+		t.Fatalf("unexpected command:\nwant=%#v\ngot=%#v", want, runner.calls[0])
+	}
+}
+
+func TestAdapter_FetchRepoStatus_UsesConfiguredReleaseWorkflowRef(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                            []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state":      []byte(`[{"state":"OPEN"}]`),
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1":                       []byte(`{"workflow_runs":[{"status":"completed","conclusion":"success"}]}`),
+			"gh|api|repos/acme/svc/actions/workflows/release.yml/runs?branch=main&per_page=1": []byte(`{"workflow_runs":[{"status":"completed","conclusion":"success"}]}`),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	st, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:               "acme/svc",
+		DefaultBranch:      "main",
+		ReleaseWorkflowRef: "release.yml",
+	})
+	if err != nil {
+		t.Fatalf("FetchRepoStatus() error = %v", err)
+	}
+
+	if st.PR != workspace.StatusInProgress {
+		t.Fatalf("expected PR status %q, got %q", workspace.StatusInProgress, st.PR)
+	}
+	if st.CI != workspace.StatusSuccess {
+		t.Fatalf("expected CI status %q, got %q", workspace.StatusSuccess, st.CI)
+	}
+	if st.Release != workspace.StatusSuccess {
+		t.Fatalf("expected release status %q, got %q", workspace.StatusSuccess, st.Release)
+	}
+
+	wantReleaseCall := "gh|api|repos/acme/svc/actions/workflows/release.yml/runs?branch=main&per_page=1"
+	if !containsCall(runner.calls, wantReleaseCall) {
+		t.Fatalf("expected release lookup command %q, calls=%v", wantReleaseCall, callKeys(runner.calls))
+	}
+}
+
+func TestAdapter_FetchRepoStatus_ReleaseUnconfiguredWhenWorkflowRefMissing(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                       []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state": []byte(`[]`),
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1":                  []byte(`{"workflow_runs":[{"status":"completed","conclusion":"success"}]}`),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	st, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:               "acme/svc",
+		DefaultBranch:      "main",
+		ReleaseWorkflowRef: "",
+	})
+	if err != nil {
+		t.Fatalf("FetchRepoStatus() error = %v", err)
+	}
+
+	if st.Release != workspace.StatusUnconfigured {
+		t.Fatalf("expected release status %q, got %q", workspace.StatusUnconfigured, st.Release)
+	}
+
+	for _, call := range runner.calls {
+		if strings.Contains(call.key(), "/actions/workflows/") {
+			t.Fatalf("expected no release workflow command when ref is empty, got call %q", call.key())
+		}
+	}
+}
+
+type fakeRunner struct {
+	calls           []commandCall
+	outputByCommand map[string][]byte
+	errByCommand    map[string]error
+}
+
+func (f *fakeRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	call := commandCall{name: name, args: append([]string(nil), args...)}
+	f.calls = append(f.calls, call)
+
+	key := call.key()
+	out, hasOut := f.outputByCommand[key]
+	if err := f.errByCommand[key]; err != nil {
+		if hasOut {
+			return append([]byte(nil), out...), err
+		}
+		return nil, err
+	}
+	if hasOut {
+		return append([]byte(nil), out...), nil
+	}
+	return nil, nil
+}
+
+type commandCall struct {
+	name string
+	args []string
+}
+
+func (c commandCall) key() string {
+	key := c.name
+	for _, arg := range c.args {
+		key += "|" + arg
+	}
+	return key
+}
+
+func containsCall(calls []commandCall, want string) bool {
+	for _, call := range calls {
+		if call.key() == want {
+			return true
+		}
+	}
+	return false
+}
+
+func callKeys(calls []commandCall) []string {
+	keys := make([]string, 0, len(calls))
+	for _, call := range calls {
+		keys = append(keys, call.key())
+	}
+	return keys
+}
+
+var _ Runner = (*fakeRunner)(nil)
