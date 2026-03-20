@@ -54,6 +54,19 @@ Release tracking depends on each repo’s `releaseWorkflowRef` value.
 
 ## Run Locally
 
+Initialize state with at least one workspace and repo:
+
+```bash
+go run ./cmd/tui init \
+  --workspace default \
+  --repo-path /absolute/path/to/your/repo \
+  --repo-name your-repo \
+  --default-branch main \
+  --release-workflow-ref .github/workflows/release.yml
+```
+
+Then start the app:
+
 ```bash
 go run ./cmd/tui
 ```
