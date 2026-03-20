@@ -39,6 +39,11 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Load(ctx context.Context) (workspace.State, error) {
+	if s == nil || s.db == nil {
+		return workspace.State{}, errStoreNotInitialized
+	}
+	ctx = normalizeContext(ctx)
+
 	var state workspace.State
 
 	if err := s.db.View(func(tx *bolt.Tx) error {
@@ -66,6 +71,11 @@ func (s *Store) Load(ctx context.Context) (workspace.State, error) {
 }
 
 func (s *Store) Save(ctx context.Context, state workspace.State) error {
+	if s == nil || s.db == nil {
+		return errStoreNotInitialized
+	}
+	ctx = normalizeContext(ctx)
+
 	return s.db.Update(func(tx *bolt.Tx) error {
 		select {
 		case <-ctx.Done():
@@ -84,4 +94,11 @@ func (s *Store) Save(ctx context.Context, state workspace.State) error {
 		}
 		return bucket.Put(keyCurrent, raw)
 	})
+}
+
+func normalizeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }

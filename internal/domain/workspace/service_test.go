@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -132,8 +133,12 @@ func TestService_DeleteWorkspace_ReturnsErrorWhenWorkspaceMissing(t *testing.T) 
 	mem := &memoryStore{}
 	svc := NewService(mem)
 
-	if err := svc.DeleteWorkspace("missing"); err == nil {
+	err := svc.DeleteWorkspace("missing")
+	if err == nil {
 		t.Fatal("DeleteWorkspace(missing) error = nil, want non-nil")
+	}
+	if !errors.Is(err, ErrWorkspaceNotFound) {
+		t.Fatalf("DeleteWorkspace(missing) error mismatch: want errors.Is(..., ErrWorkspaceNotFound), got %v", err)
 	}
 }
 

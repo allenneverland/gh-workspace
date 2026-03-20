@@ -2,6 +2,7 @@ package boltdb
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -79,6 +80,64 @@ func TestStore_SaveThenLoad_PersistsWorkspaceStateAcrossReopen(t *testing.T) {
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("state mismatch after reopen:\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
+func TestStore_Load_NilReceiverReturnsExplicitError(t *testing.T) {
+	var store *Store
+	_, err := store.Load(context.Background())
+	if !errors.Is(err, errStoreNotInitialized) {
+		t.Fatalf("Load() error mismatch: want errors.Is(..., errStoreNotInitialized), got %v", err)
+	}
+}
+
+func TestStore_Save_NilReceiverReturnsExplicitError(t *testing.T) {
+	var store *Store
+	err := store.Save(context.Background(), workspace.State{})
+	if !errors.Is(err, errStoreNotInitialized) {
+		t.Fatalf("Save() error mismatch: want errors.Is(..., errStoreNotInitialized), got %v", err)
+	}
+}
+
+func TestStore_Load_NilContextHandled(t *testing.T) {
+	store := openTestStore(t)
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	got, err := store.Load(nil)
+	if err != nil {
+		t.Fatalf("Load(nil) error = %v", err)
+	}
+	if got.SelectedWorkspaceID != "" {
+		t.Fatalf("expected empty selected workspace ID, got %q", got.SelectedWorkspaceID)
+	}
+}
+
+func TestStore_Save_NilContextHandled(t *testing.T) {
+	store := openTestStore(t)
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+
+	want := workspace.State{
+		SelectedWorkspaceID: "ws-1",
+	}
+
+	if err := store.Save(nil, want); err != nil {
+		t.Fatalf("Save(nil) error = %v", err)
+	}
+
+	got, err := store.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("state mismatch after Save(nil):\nwant: %#v\ngot:  %#v", want, got)
 	}
 }
 
