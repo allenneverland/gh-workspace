@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,6 +20,8 @@ type SelectedRepoStatusFetcher interface {
 type Option func(*Engine)
 
 type Engine struct {
+	mu sync.RWMutex
+
 	fetcher SelectedRepoStatusFetcher
 
 	interval    time.Duration
@@ -69,32 +72,32 @@ func WithTickFactory(factory func(interval time.Duration) tea.Cmd) Option {
 }
 
 func (e *Engine) RefreshNow(ctx context.Context) (workspace.RepoStatus, error) {
-	if e == nil || e.fetcher == nil {
+	if e == nil {
 		return workspace.RepoStatus{}, nil
 	}
-
-	workspaceID := strings.TrimSpace(e.selectedWorkspaceID)
-	repoID := strings.TrimSpace(e.selectedRepoID)
-	if workspaceID == "" || repoID == "" {
-		return workspace.RepoStatus{}, nil
-	}
-
-	return e.fetcher.FetchSelectedRepoStatus(ctx, workspaceID, repoID)
+	fetcher, workspaceID, repoID := e.snapshotSelection()
+	return fetchSelectedRepoStatus(ctx, fetcher, workspaceID, repoID)
 }
 
 func (e *Engine) SetSelection(workspaceID, repoID string) {
 	if e == nil {
 		return
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.selectedWorkspaceID = strings.TrimSpace(workspaceID)
 	e.selectedRepoID = strings.TrimSpace(repoID)
 }
 
 func (e *Engine) OnTick(ctx context.Context) (workspace.RepoStatus, error) {
-	if e == nil || !e.autoPolling {
+	if e == nil {
 		return workspace.RepoStatus{}, nil
 	}
-	return e.RefreshNow(ctx)
+	fetcher, workspaceID, repoID, enabled := e.snapshotPollingSelection()
+	if !enabled {
+		return workspace.RepoStatus{}, nil
+	}
+	return fetchSelectedRepoStatus(ctx, fetcher, workspaceID, repoID)
 }
 
 func (e *Engine) OnSelectionChanged(ctx context.Context, workspaceID, repoID string) (workspace.RepoStatus, error) {
@@ -104,27 +107,43 @@ func (e *Engine) OnSelectionChanged(ctx context.Context, workspaceID, repoID str
 
 	workspaceID = strings.TrimSpace(workspaceID)
 	repoID = strings.TrimSpace(repoID)
+	e.mu.Lock()
 	changed := e.selectedWorkspaceID != workspaceID || e.selectedRepoID != repoID
-	e.SetSelection(workspaceID, repoID)
+	e.selectedWorkspaceID = workspaceID
+	e.selectedRepoID = repoID
+	fetcher := e.fetcher
+	e.mu.Unlock()
 
 	if !changed {
 		return workspace.RepoStatus{}, nil
 	}
 
-	return e.RefreshNow(ctx)
+	return fetchSelectedRepoStatus(ctx, fetcher, workspaceID, repoID)
 }
 
 func (e *Engine) Start(context.Context) tea.Cmd {
-	if e == nil || !e.autoPolling || e.interval <= 0 {
+	if e == nil {
 		return nil
 	}
-	return e.tickFactory(e.interval)
+
+	e.mu.RLock()
+	enabled := e.autoPolling
+	interval := e.interval
+	tickFactory := e.tickFactory
+	e.mu.RUnlock()
+
+	if !enabled || interval <= 0 || tickFactory == nil {
+		return nil
+	}
+	return tickFactory(interval)
 }
 
 func (e *Engine) SetAutoPolling(enabled bool) {
 	if e == nil {
 		return
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.autoPolling = enabled
 }
 
@@ -132,6 +151,8 @@ func (e *Engine) AutoPollingEnabled() bool {
 	if e == nil {
 		return false
 	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.autoPolling
 }
 
@@ -142,3 +163,34 @@ func defaultTickFactory(interval time.Duration) tea.Cmd {
 }
 
 type MsgTick struct{}
+
+func (e *Engine) snapshotSelection() (SelectedRepoStatusFetcher, string, string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.fetcher, e.selectedWorkspaceID, e.selectedRepoID
+}
+
+func (e *Engine) snapshotPollingSelection() (SelectedRepoStatusFetcher, string, string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.fetcher, e.selectedWorkspaceID, e.selectedRepoID, e.autoPolling
+}
+
+func fetchSelectedRepoStatus(
+	ctx context.Context,
+	fetcher SelectedRepoStatusFetcher,
+	workspaceID,
+	repoID string,
+) (workspace.RepoStatus, error) {
+	if fetcher == nil {
+		return workspace.RepoStatus{}, nil
+	}
+
+	workspaceID = strings.TrimSpace(workspaceID)
+	repoID = strings.TrimSpace(repoID)
+	if workspaceID == "" || repoID == "" {
+		return workspace.RepoStatus{}, nil
+	}
+
+	return fetcher.FetchSelectedRepoStatus(ctx, workspaceID, repoID)
+}
