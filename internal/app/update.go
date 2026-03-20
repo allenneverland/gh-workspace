@@ -17,17 +17,27 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
 		}
+		if m.ActiveTab == diffTab {
+			return m, nil
+		}
 	case MsgSelectRepo:
 		m.State.SelectRepo(msg.RepoID)
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
 		}
+		if m.ActiveTab == diffTab {
+			return m, nil
+		}
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
 			return scheduleLazygitFrameWait(m)
+		}
+		if m.ActiveTab == diffTab {
+			// Diff tab remains read-only in v1 and renders directly from view.
+			return m, nil
 		}
 	case MsgRequestAddRepo:
 		m.AddRepoRequested = true
