@@ -87,7 +87,8 @@ func (a *Adapter) fetchPullRequestStatus(ctx context.Context, repo workspace.Rep
 
 	var pulls []pullRequest
 	if err := json.Unmarshal(out, &pulls); err != nil {
-		return workspace.StatusNeutral, fmt.Errorf("parse gh pr list output: %w", err)
+		command := "gh " + strings.Join(args, " ")
+		return workspace.StatusNeutral, fmt.Errorf("parse gh pr list output for %s: %w (raw=%q)", command, err, safeSnippet(out))
 	}
 	if len(pulls) == 0 {
 		return workspace.StatusNeutral, nil
@@ -96,8 +97,6 @@ func (a *Adapter) fetchPullRequestStatus(ctx context.Context, repo workspace.Rep
 	switch strings.ToLower(strings.TrimSpace(pulls[0].State)) {
 	case "open":
 		return workspace.StatusInProgress, nil
-	case "merged":
-		return workspace.StatusSuccess, nil
 	default:
 		return workspace.StatusNeutral, nil
 	}
@@ -121,7 +120,7 @@ func (a *Adapter) fetchLatestWorkflowStatus(ctx context.Context, repoName, workf
 
 	var runs workflowRunsResponse
 	if err := json.Unmarshal(out, &runs); err != nil {
-		return workspace.StatusNeutral, fmt.Errorf("parse gh workflow runs output: %w", err)
+		return workspace.StatusNeutral, fmt.Errorf("parse gh workflow runs output for endpoint %q: %w (raw=%q)", endpoint, err, safeSnippet(out))
 	}
 	if len(runs.WorkflowRuns) == 0 {
 		return workspace.StatusNeutral, nil
@@ -157,6 +156,15 @@ func (a *Adapter) runGH(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s failed: %w", command, err)
 	}
 	return nil, fmt.Errorf("%s failed: %w: %s", command, err, output)
+}
+
+func safeSnippet(raw []byte) string {
+	const limit = 160
+	snippet := strings.TrimSpace(string(raw))
+	if len(snippet) <= limit {
+		return snippet
+	}
+	return snippet[:limit] + "..."
 }
 
 type commandRunner struct{}

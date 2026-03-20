@@ -59,7 +59,7 @@ func StatusFromGitHubRun(status, conclusion string) Status {
 		return StatusInProgress
 	case "success":
 		return StatusSuccess
-	case "failure":
+	case "failure", "timed_out", "action_required", "stale":
 		return StatusFailure
 	case "cancelled", "skipped":
 		return StatusNeutral
@@ -68,7 +68,7 @@ func StatusFromGitHubRun(status, conclusion string) Status {
 	switch strings.ToLower(strings.TrimSpace(conclusion)) {
 	case "success":
 		return StatusSuccess
-	case "failure":
+	case "failure", "timed_out", "action_required", "stale":
 		return StatusFailure
 	case "cancelled", "skipped":
 		return StatusNeutral

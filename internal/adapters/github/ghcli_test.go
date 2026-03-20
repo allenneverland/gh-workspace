@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -93,6 +94,134 @@ func TestAdapter_FetchRepoStatus_ReleaseUnconfiguredWhenWorkflowRefMissing(t *te
 		if strings.Contains(call.key(), "/actions/workflows/") {
 			t.Fatalf("expected no release workflow command when ref is empty, got call %q", call.key())
 		}
+	}
+}
+
+func TestAdapter_CheckAuth_WhenCommandFails_IncludesCommandAndOutput(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com": []byte("not logged in"),
+		},
+		errByCommand: map[string]error{
+			"gh|auth|status|--hostname|github.com": errors.New("exit status 1"),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	err := adapter.CheckAuth(context.Background())
+	if err == nil {
+		t.Fatal("CheckAuth() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gh auth status --hostname github.com") {
+		t.Fatalf("expected command context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("expected command output in error, got %q", err.Error())
+	}
+}
+
+func TestAdapter_FetchRepoStatus_MergedStateDoesNotMapSuccessWhenQueryIsOpenOnly(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                       []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state": []byte(`[{"state":"MERGED"}]`),
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1":                  []byte(`{"workflow_runs":[{"status":"completed","conclusion":"success"}]}`),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	st, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:          "acme/svc",
+		DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("FetchRepoStatus() error = %v", err)
+	}
+	if st.PR != workspace.StatusNeutral {
+		t.Fatalf("expected PR status %q, got %q", workspace.StatusNeutral, st.PR)
+	}
+}
+
+func TestAdapter_FetchRepoStatus_InvalidPRJSON_IncludesContextAndSnippet(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                       []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state": []byte(`[{`),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	_, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:          "acme/svc",
+		DefaultBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("FetchRepoStatus() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "parse gh pr list output") {
+		t.Fatalf("expected parse context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "gh pr list --repo acme/svc --state open --base main --limit 1 --json state") {
+		t.Fatalf("expected command context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "[{") {
+		t.Fatalf("expected raw snippet in error, got %q", err.Error())
+	}
+}
+
+func TestAdapter_FetchRepoStatus_InvalidWorkflowJSON_IncludesEndpointAndSnippet(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                       []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state": []byte(`[]`),
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1":                  []byte(`{"workflow_runs":[`),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	_, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:          "acme/svc",
+		DefaultBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("FetchRepoStatus() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "parse gh workflow runs output") {
+		t.Fatalf("expected parse context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "repos/acme/svc/actions/runs?branch=main&per_page=1") {
+		t.Fatalf("expected endpoint context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "workflow_runs") {
+		t.Fatalf("expected raw snippet in error, got %q", err.Error())
+	}
+}
+
+func TestAdapter_FetchRepoStatus_WhenWorkflowCommandFails_ReturnsCommandError(t *testing.T) {
+	runner := &fakeRunner{
+		outputByCommand: map[string][]byte{
+			"gh|auth|status|--hostname|github.com":                                       []byte("ok"),
+			"gh|pr|list|--repo|acme/svc|--state|open|--base|main|--limit|1|--json|state": []byte(`[]`),
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1":                  []byte(`{"message":"internal error"}`),
+		},
+		errByCommand: map[string]error{
+			"gh|api|repos/acme/svc/actions/runs?branch=main&per_page=1": errors.New("exit status 1"),
+		},
+	}
+	adapter := NewAdapter(runner)
+
+	_, err := adapter.FetchRepoStatus(context.Background(), workspace.Repo{
+		Name:          "acme/svc",
+		DefaultBranch: "main",
+	})
+	if err == nil {
+		t.Fatal("FetchRepoStatus() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "gh api repos/acme/svc/actions/runs?branch=main&per_page=1") {
+		t.Fatalf("expected command context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "internal error") {
+		t.Fatalf("expected command output in error, got %q", err.Error())
 	}
 }
 

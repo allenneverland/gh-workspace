@@ -63,6 +63,24 @@ func TestStatusFromGitHubRun_MapsWorkflowStatesAndConclusions(t *testing.T) {
 			status: "completed",
 			want:   StatusNeutral,
 		},
+		{
+			name:       "timed out conclusion maps to failure",
+			status:     "completed",
+			conclusion: "timed_out",
+			want:       StatusFailure,
+		},
+		{
+			name:       "action required conclusion maps to failure",
+			status:     "completed",
+			conclusion: "action_required",
+			want:       StatusFailure,
+		},
+		{
+			name:       "stale conclusion maps to failure",
+			status:     "completed",
+			conclusion: "stale",
+			want:       StatusFailure,
+		},
 	}
 
 	for _, tt := range tests {
