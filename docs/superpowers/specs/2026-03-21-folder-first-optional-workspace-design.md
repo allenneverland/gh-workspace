@@ -42,15 +42,21 @@
 
 沿用現有 `workspace.State` 結構，不新增第二套 schema。
 
-引入內部保留 workspace：`__local__`
+引入內部保留 workspace：`__local_internal__`（ID）
 
 - 僅供 Folder Mode 使用
 - 不在一般 workspace UI 中顯示
 - 儲存 Folder Mode 的單一 repo 選擇
 
+補充保留規則：
+
+- 保留 ID 只作用於系統 workspace，不作為使用者可選 workspace
+- `gh-workspace -w __local_internal__` 視為非法輸入並報錯
+- 若偵測到舊資料已存在同 ID 的使用者 workspace，啟動時先自動改 ID（例如加 `-legacy` 後綴）再建立系統 workspace
+
 ### 4.3 Folder Mode 單一 repo 不變式
 
-`__local__` 在任何時刻最多保留一個 repo：
+`__local_internal__` 在任何時刻最多保留一個 repo：
 
 - 開新 folder 成功：覆蓋為新 repo
 - 開非 git folder：清空 repo，進空狀態
@@ -76,21 +82,23 @@
 - `-w <name>` 找不到：印 `workspace not found: <name>`，非 0 退出
 - `-f/-w` 參數錯誤：印 usage，非 0 退出
 - `gh-workspace` 或 `-f <path>` 指向非 git repo：不退出，啟動 TUI 空狀態並顯示提示
+- `-f <path>` 路徑不存在或不可讀：同樣視為 non-git 情境（進空狀態 + 提示），不直接崩潰退出
 
 ## 6. 狀態轉換
 
 ### 6.1 open-folder(path)
 
 1. 路徑正規化（絕對路徑）
-2. 判斷是否 git repo
-3. 若是 git repo：
-   - 確保 `__local__` 存在
-   - 用該 repo 覆蓋 `__local__` repo 清單（只留一個）
-   - 選中 `__local__` + 該 repo
+2. 若可進入 git repo，將路徑正規化為 repo root（`git rev-parse --show-toplevel`）
+3. 判斷是否 git repo
+4. 若是 git repo：
+   - 確保 `__local_internal__` 存在
+   - 用該 repo 覆蓋 `__local_internal__` repo 清單（只留一個）
+   - 選中 `__local_internal__` + 該 repo
    - 啟動 `Folder Mode`
-4. 若非 git repo：
-   - 清空 `__local__` repo
-   - 選中 `__local__`
+5. 若非 git repo（含路徑不存在/不可讀）：
+   - 清空 `__local_internal__` repo
+   - 選中 `__local_internal__`
    - 啟動 `Folder Mode` 空狀態
 
 ### 6.2 open-workspace(name)
@@ -109,6 +117,7 @@
 ### 7.2 快捷鍵
 
 - `Folder Mode`：`[` `]` workspace 切換鍵停用
+- `Folder Mode`：`a` 新增/切換 repo 時必須維持單一 repo 不變式（有效 git 路徑則替換；無效路徑則清空並提示）
 - `Workspace Mode`：`[` `]` 正常工作
 - 其他既有鍵（tab、1..4、r、p、lazygit/diff 相關）保持一致
 
