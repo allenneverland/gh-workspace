@@ -37,7 +37,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			} else {
 				m.StatusMessage = "no selected repo to remove"
 			}
-		case key.Matches(msg, m.Keys.FixRepoPath):
+		case key.Matches(msg, m.Keys.SelectRepo):
 			m = attemptRepoRecovery(m)
 		case key.Matches(msg, m.Keys.NextWorkspace):
 			m.State.SelectNextWorkspace()

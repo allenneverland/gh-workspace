@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
@@ -114,6 +115,72 @@ func TestUpdate_KeyEnter_InvalidRepoPathMissing_StaysInvalid(t *testing.T) {
 	}
 	if !strings.Contains(got.StatusMessage, "invalid") {
 		t.Fatalf("expected invalid status message, got %q", got.StatusMessage)
+	}
+}
+
+func TestUpdate_DoesNotMutateSourceModel_OnSelectRepo(t *testing.T) {
+	m := seededModelWithRepos()
+
+	updated, _ := m.Update(MsgSelectRepo{RepoID: "repo-2"})
+	got := updated.(Model)
+	if got.State.CurrentRepoID() != "repo-2" {
+		t.Fatalf("expected updated model repo %q, got %q", "repo-2", got.State.CurrentRepoID())
+	}
+	if m.State.CurrentRepoID() != "repo-1" {
+		t.Fatalf("expected source model repo to remain %q, got %q", "repo-1", m.State.CurrentRepoID())
+	}
+}
+
+func TestUpdate_DoesNotMutateSourceModel_OnRemoveRepo(t *testing.T) {
+	m := seededModelWithRepos()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	got := updated.(Model)
+	updatedWorkspace, ok := got.State.CurrentWorkspace()
+	if !ok {
+		t.Fatal("expected updated workspace")
+	}
+	if len(updatedWorkspace.Repos) != 1 {
+		t.Fatalf("expected updated model repo count %d, got %d", 1, len(updatedWorkspace.Repos))
+	}
+
+	sourceWorkspace, ok := m.State.CurrentWorkspace()
+	if !ok {
+		t.Fatal("expected source workspace")
+	}
+	if len(sourceWorkspace.Repos) != 2 {
+		t.Fatalf("expected source model repo count %d, got %d", 2, len(sourceWorkspace.Repos))
+	}
+	if sourceWorkspace.SelectedRepoID != "repo-1" {
+		t.Fatalf("expected source selected repo %q, got %q", "repo-1", sourceWorkspace.SelectedRepoID)
+	}
+}
+
+func TestUpdate_SelectRepoBinding_DrivesInvalidRecovery(t *testing.T) {
+	existingPath := t.TempDir()
+	m := NewModel(Config{
+		InitialState: singleRepoState(existingPath, workspace.RepoInvalid),
+	})
+	m.Keys.SelectRepo = key.NewBinding(key.WithKeys("s"))
+
+	enterUpdated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	enterModel := enterUpdated.(Model)
+	enterRepo, ok := enterModel.State.CurrentRepo()
+	if !ok {
+		t.Fatal("expected repo after enter")
+	}
+	if enterRepo.Health != workspace.RepoInvalid {
+		t.Fatalf("expected enter to not recover with remapped key binding, got %q", enterRepo.Health)
+	}
+
+	bindingUpdated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	bindingModel := bindingUpdated.(Model)
+	bindingRepo, ok := bindingModel.State.CurrentRepo()
+	if !ok {
+		t.Fatal("expected repo after binding key")
+	}
+	if bindingRepo.Health != workspace.RepoHealthy {
+		t.Fatalf("expected bound select key to recover repo to %q, got %q", workspace.RepoHealthy, bindingRepo.Health)
 	}
 }
 

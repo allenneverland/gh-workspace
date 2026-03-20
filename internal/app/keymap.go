@@ -7,7 +7,6 @@ type KeyMap struct {
 	PrevWorkspace key.Binding
 	AddRepo       key.Binding
 	SelectRepo    key.Binding
-	FixRepoPath   key.Binding
 	RemoveRepo    key.Binding
 }
 
@@ -27,11 +26,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		SelectRepo: key.NewBinding(
 			key.WithKeys("enter"),
-			key.WithHelp("enter", "select repo"),
-		),
-		FixRepoPath: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "fix path"),
+			key.WithHelp("enter", "select repo/fix path"),
 		),
 		RemoveRepo: key.NewBinding(
 			key.WithKeys("x"),

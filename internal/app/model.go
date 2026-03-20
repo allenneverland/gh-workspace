@@ -257,10 +257,16 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	updated, cmd := updateModel(m, msg)
+	updated, cmd := updateModel(m.cloneForUpdate(), msg)
 	return updated, cmd
 }
 
 func (m Model) View() string {
 	return renderView(m)
+}
+
+func (m Model) cloneForUpdate() Model {
+	cloned := m
+	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
+	return cloned
 }
