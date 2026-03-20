@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,33 +24,69 @@ func TestRun_InvalidFolderWorkspaceCombo_ReturnsUsageError(t *testing.T) {
 	}
 }
 
-func TestRun_WorkspaceNotFoundError_BubblesFromRuntime(t *testing.T) {
+func TestRun_DefaultNoArgs_StillComposesRuntime(t *testing.T) {
+	called := false
+	var captured LaunchOptions
+
 	previousCompose := composeRuntimeModelForLaunch
 	t.Cleanup(func() {
 		composeRuntimeModelForLaunch = previousCompose
 	})
-
 	composeRuntimeModelForLaunch = func(_ context.Context, opts LaunchOptions) (app.Model, func() error, error) {
-		if opts.Mode != LaunchWorkspace {
-			t.Fatalf("expected workspace mode opts, got %#v", opts)
-		}
-		if opts.WorkspaceName != "does-not-exist" {
-			t.Fatalf("expected workspace %q, got %q", "does-not-exist", opts.WorkspaceName)
-		}
-		return app.Model{}, nil, errors.New("workspace not found: does-not-exist")
+		called = true
+		captured = opts
+		return app.Model{}, nil, errors.New("compose sentinel")
+	}
+
+	err := run(nil)
+	if err == nil {
+		t.Fatal("expected compose sentinel error from runtime composition")
+	}
+	if !called {
+		t.Fatal("expected default no-arg launch to reach runtime composition")
+	}
+	if captured.Mode != LaunchFolder {
+		t.Fatalf("expected folder mode launch options, got %#v", captured)
+	}
+	cwd, wdErr := os.Getwd()
+	if wdErr != nil {
+		t.Fatalf("Getwd() error = %v", wdErr)
+	}
+	if captured.Path != cwd {
+		t.Fatalf("expected folder path %q, got %q", cwd, captured.Path)
+	}
+	if !strings.Contains(err.Error(), "compose sentinel") {
+		t.Fatalf("expected composed runtime error to bubble up, got %v", err)
+	}
+}
+
+func TestRun_WorkspaceIntentRejectedUntilRuntimeWiring(t *testing.T) {
+	called := false
+
+	previousCompose := composeRuntimeModelForLaunch
+	t.Cleanup(func() {
+		composeRuntimeModelForLaunch = previousCompose
+	})
+	composeRuntimeModelForLaunch = func(_ context.Context, _ LaunchOptions) (app.Model, func() error, error) {
+		called = true
+		return app.Model{}, nil, nil
 	}
 
 	err := run([]string{"-w", "does-not-exist"})
 	if err == nil {
-		t.Fatal("expected run error for unknown workspace")
+		t.Fatal("expected workspace launch intent rejection before runtime wiring")
 	}
-	if !strings.Contains(err.Error(), "workspace not found: does-not-exist") {
-		t.Fatalf("expected runtime error to bubble up, got %v", err)
+	if called {
+		t.Fatal("expected -w rejection before runtime composition")
+	}
+	if !strings.Contains(err.Error(), "workspace launch via -w is not supported") {
+		t.Fatalf("expected clear unsupported -w error, got %v", err)
 	}
 }
 
 func TestRun_ReservedWorkspaceNameRejectedEarly(t *testing.T) {
 	called := false
+
 	previousCompose := composeRuntimeModelForLaunch
 	t.Cleanup(func() {
 		composeRuntimeModelForLaunch = previousCompose
@@ -67,6 +105,31 @@ func TestRun_ReservedWorkspaceNameRejectedEarly(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("expected reserved-name parse error, got %v", err)
+	}
+}
+
+func TestRun_NonCWD_FolderIntentRejectedUntilRuntimeWiring(t *testing.T) {
+	called := false
+
+	previousCompose := composeRuntimeModelForLaunch
+	t.Cleanup(func() {
+		composeRuntimeModelForLaunch = previousCompose
+	})
+	composeRuntimeModelForLaunch = func(_ context.Context, _ LaunchOptions) (app.Model, func() error, error) {
+		called = true
+		return app.Model{}, nil, nil
+	}
+
+	nonCWDPath := filepath.Join(t.TempDir(), "not-cwd")
+	err := run([]string{"-f", nonCWDPath})
+	if err == nil {
+		t.Fatal("expected non-cwd folder launch intent rejection before runtime wiring")
+	}
+	if called {
+		t.Fatal("expected unsupported -f path rejection before runtime composition")
+	}
+	if !strings.Contains(err.Error(), "folder launch for path") {
+		t.Fatalf("expected clear unsupported -f path error, got %v", err)
 	}
 }
 

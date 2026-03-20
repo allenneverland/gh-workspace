@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -37,6 +39,9 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%w\n\n%s", err, launchOptionsUsage())
 	}
+	if err := rejectUnsupportedLaunchIntent(opts, cwd); err != nil {
+		return err
+	}
 
 	model, closeFn, err := composeRuntimeModelForLaunch(context.Background(), opts)
 	if err != nil {
@@ -55,4 +60,38 @@ func run(args []string) error {
 		return fmt.Errorf("tui exited with error: %w", err)
 	}
 	return nil
+}
+
+func rejectUnsupportedLaunchIntent(opts LaunchOptions, cwd string) error {
+	switch opts.Mode {
+	case LaunchWorkspace:
+		return errors.New("workspace launch via -w is not supported until runtime wiring is implemented")
+	case LaunchFolder:
+		matchesCWD, err := launchPathMatchesCWD(opts.Path, cwd)
+		if err != nil {
+			return fmt.Errorf("resolve launch path: %w", err)
+		}
+		if matchesCWD {
+			return nil
+		}
+		return fmt.Errorf(
+			"folder launch for path %q is not supported until runtime wiring is implemented; only current directory %q is currently supported",
+			opts.Path,
+			cwd,
+		)
+	default:
+		return fmt.Errorf("unsupported launch mode %q", opts.Mode)
+	}
+}
+
+func launchPathMatchesCWD(path, cwd string) (bool, error) {
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		return false, err
+	}
+	return filepath.Clean(pathAbs) == filepath.Clean(cwdAbs), nil
 }
