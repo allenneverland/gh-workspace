@@ -54,29 +54,39 @@ Release tracking depends on each repo’s `releaseWorkflowRef` value.
 
 ## Run Locally
 
-Initialize state with at least one workspace and repo:
+You can launch directly in folder mode (workspace optional):
 
 ```bash
-go run ./cmd/tui init \
-  --workspace default \
-  --repo-path /absolute/path/to/your/repo \
-  --repo-name your-repo \
-  --default-branch main \
-  --release-workflow-ref .github/workflows/release.yml
+gh-workspace
+gh-workspace -f ../repo
 ```
 
-Then start the app:
+Or open an existing named workspace:
 
 ```bash
-go run ./cmd/tui
+gh-workspace -w team-a
 ```
+
+Behavior notes:
+
+- `gh-workspace` uses current directory as folder mode root.
+- `gh-workspace -f <path>` uses the provided folder path.
+- `gh-workspace -w <name>` opens only existing workspaces (missing name => `workspace not found: <name>`).
+- `-w __local_internal__` is rejected (reserved system workspace name).
+- Folder mode non-git paths clear local repo selection and show `current folder is not a git repo`.
 
 ## Runtime Keymap (v1)
 
 - `a`: add repo path
 - `enter`: attempt invalid-path recovery for the current repo
 - `x`: remove selected repo
-- `]`: next workspace
-- `[`: previous workspace
+- `]`: next workspace (workspace mode only)
+- `[`: previous workspace (workspace mode only)
 - `r`: refresh selected repo now
 - `p`: toggle auto polling on/off
+
+Folder mode specifics:
+
+- workspace list is hidden in the left pane
+- `[` and `]` are disabled
+- `a` opens repo-path input (`enter` submit, `esc` cancel)

@@ -18,6 +18,10 @@ type MsgRefreshDiff struct{}
 
 type MsgRequestAddRepo struct{}
 
+type MsgSubmitRepoPath struct {
+	Path string
+}
+
 type MsgCreateWorktree struct {
 	Branch string
 	Path   string

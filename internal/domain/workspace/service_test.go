@@ -281,6 +281,256 @@ func TestService_RemoveRepo_RemovesRepoAndUpdatesSelection(t *testing.T) {
 	}
 }
 
+func TestService_EnsureLocalWorkspace_FirstRunCreatesSystemWorkspace(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	ws, err := svc.EnsureLocalWorkspace()
+	if err != nil {
+		t.Fatalf("EnsureLocalWorkspace() error = %v", err)
+	}
+	if ws.ID != LocalWorkspaceID {
+		t.Fatalf("expected local workspace ID %q, got %q", LocalWorkspaceID, ws.ID)
+	}
+	if ws.Name != LocalWorkspaceName {
+		t.Fatalf("expected local workspace name %q, got %q", LocalWorkspaceName, ws.Name)
+	}
+	if len(ws.Repos) != 0 {
+		t.Fatalf("expected no repos on first run, got %d", len(ws.Repos))
+	}
+
+	state, err := svc.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected exactly one workspace in state, got %d", len(state.Workspaces))
+	}
+	if state.Workspaces[0].ID != LocalWorkspaceID {
+		t.Fatalf("expected persisted workspace ID %q, got %q", LocalWorkspaceID, state.Workspaces[0].ID)
+	}
+}
+
+func TestService_ReplaceLocalRepo_EnsuresSingleRepoInLocalWorkspace(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	first, err := svc.ReplaceLocalRepo(RepoInput{
+		Name: "first",
+		Path: "/tmp/first",
+	})
+	if err != nil {
+		t.Fatalf("ReplaceLocalRepo(first) error = %v", err)
+	}
+	second, err := svc.ReplaceLocalRepo(RepoInput{
+		Name:          "second",
+		Path:          "/tmp/second",
+		DefaultBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("ReplaceLocalRepo(second) error = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected a newly created repo ID on replace, both were %q", first.ID)
+	}
+
+	state, err := svc.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	ws, ok := findWorkspace(state, LocalWorkspaceID)
+	if !ok {
+		t.Fatalf("local workspace %q not found", LocalWorkspaceID)
+	}
+	if len(ws.Repos) != 1 {
+		t.Fatalf("expected exactly one local repo, got %d", len(ws.Repos))
+	}
+	if ws.Repos[0].ID != second.ID {
+		t.Fatalf("expected remaining repo ID %q, got %q", second.ID, ws.Repos[0].ID)
+	}
+	if ws.Repos[0].Name != "second" {
+		t.Fatalf("expected remaining repo name %q, got %q", "second", ws.Repos[0].Name)
+	}
+	if ws.Repos[0].Path != "/tmp/second" {
+		t.Fatalf("expected remaining repo path %q, got %q", "/tmp/second", ws.Repos[0].Path)
+	}
+}
+
+func TestService_ClearLocalRepos_LeavesWorkspaceButNoRepos(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	repo, err := svc.ReplaceLocalRepo(RepoInput{
+		Name: "first",
+		Path: "/tmp/first",
+	})
+	if err != nil {
+		t.Fatalf("ReplaceLocalRepo() error = %v", err)
+	}
+	if repo.ID == "" {
+		t.Fatal("ReplaceLocalRepo() returned empty repo ID")
+	}
+
+	if err := svc.ClearLocalRepos(); err != nil {
+		t.Fatalf("ClearLocalRepos() error = %v", err)
+	}
+
+	state, err := svc.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	ws, ok := findWorkspace(state, LocalWorkspaceID)
+	if !ok {
+		t.Fatalf("local workspace %q not found", LocalWorkspaceID)
+	}
+	if len(ws.Repos) != 0 {
+		t.Fatalf("expected local repos to be cleared, got %d", len(ws.Repos))
+	}
+	if ws.SelectedRepoID != "" {
+		t.Fatalf("expected local selected repo to be cleared, got %q", ws.SelectedRepoID)
+	}
+}
+
+func TestService_FindWorkspaceByName_ExcludesSystemByDefault(t *testing.T) {
+	mem := &memoryStore{}
+	svc := NewService(mem)
+
+	if _, err := svc.EnsureLocalWorkspace(); err != nil {
+		t.Fatalf("EnsureLocalWorkspace() error = %v", err)
+	}
+	userWorkspace, err := svc.CreateWorkspace("team-a")
+	if err != nil {
+		t.Fatalf("CreateWorkspace(team-a) error = %v", err)
+	}
+
+	_, found, err := svc.FindWorkspaceByName(LocalWorkspaceName, false)
+	if err != nil {
+		t.Fatalf("FindWorkspaceByName(includeSystem=false) error = %v", err)
+	}
+	if found {
+		t.Fatal("expected system workspace lookup to be excluded when includeSystem=false")
+	}
+
+	ws, found, err := svc.FindWorkspaceByName(LocalWorkspaceName, true)
+	if err != nil {
+		t.Fatalf("FindWorkspaceByName(includeSystem=true) error = %v", err)
+	}
+	if !found {
+		t.Fatal("expected system workspace lookup to succeed when includeSystem=true")
+	}
+	if ws.ID != LocalWorkspaceID {
+		t.Fatalf("expected system workspace ID %q, got %q", LocalWorkspaceID, ws.ID)
+	}
+
+	ws, found, err = svc.FindWorkspaceByName("team-a", false)
+	if err != nil {
+		t.Fatalf("FindWorkspaceByName(user, includeSystem=false) error = %v", err)
+	}
+	if !found {
+		t.Fatal("expected user workspace lookup to succeed")
+	}
+	if ws.ID != userWorkspace.ID {
+		t.Fatalf("expected workspace ID %q, got %q", userWorkspace.ID, ws.ID)
+	}
+}
+
+func TestService_EnsureLocalWorkspaceIntegrity_RenamesCollisionsDeterministically(t *testing.T) {
+	mem := &memoryStore{
+		state: State{
+			SelectedWorkspaceID: LocalWorkspaceID,
+			Workspaces: []Workspace{
+				{
+					ID:   LocalWorkspaceID,
+					Name: "my-workspace",
+				},
+				{
+					ID:   "ws-001",
+					Name: LocalWorkspaceName,
+				},
+				{
+					ID:   "my-workspace-legacy-1",
+					Name: "my-workspace-legacy-1",
+				},
+				{
+					ID:   "ws-001-legacy-1",
+					Name: "ws-001-legacy-1",
+				},
+			},
+		},
+	}
+	svc := NewService(mem)
+
+	if err := svc.EnsureLocalWorkspaceIntegrity(); err != nil {
+		t.Fatalf("EnsureLocalWorkspaceIntegrity() error = %v", err)
+	}
+
+	state, err := svc.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+
+	if len(state.Workspaces) != 4 {
+		t.Fatalf("expected workspace count to remain 4, got %d", len(state.Workspaces))
+	}
+
+	first := state.Workspaces[0]
+	if first.ID != "my-workspace-legacy-2" {
+		t.Fatalf("expected first workspace ID %q, got %q", "my-workspace-legacy-2", first.ID)
+	}
+	if first.Name != "my-workspace-legacy-2" {
+		t.Fatalf("expected first workspace name %q, got %q", "my-workspace-legacy-2", first.Name)
+	}
+
+	second := state.Workspaces[1]
+	if second.ID != "ws-001-legacy-2" {
+		t.Fatalf("expected second workspace ID %q, got %q", "ws-001-legacy-2", second.ID)
+	}
+	if second.Name != "ws-001-legacy-2" {
+		t.Fatalf("expected second workspace name %q, got %q", "ws-001-legacy-2", second.Name)
+	}
+
+	if state.SelectedWorkspaceID != "my-workspace-legacy-2" {
+		t.Fatalf("expected selected workspace ID %q, got %q", "my-workspace-legacy-2", state.SelectedWorkspaceID)
+	}
+}
+
+func TestService_EnsureLocalWorkspace_ReusesExistingSystemWorkspace(t *testing.T) {
+	mem := &memoryStore{
+		state: State{
+			Workspaces: []Workspace{
+				{
+					ID:   LocalWorkspaceID,
+					Name: LocalWorkspaceName,
+					Repos: []Repo{
+						{
+							ID:   "repo-1",
+							Name: "local",
+							Path: "/tmp/local",
+						},
+					},
+				},
+			},
+		},
+	}
+	svc := NewService(mem)
+
+	ws, err := svc.EnsureLocalWorkspace()
+	if err != nil {
+		t.Fatalf("EnsureLocalWorkspace() error = %v", err)
+	}
+	if len(ws.Repos) != 1 {
+		t.Fatalf("expected existing local repo to be preserved, got %d", len(ws.Repos))
+	}
+
+	state, err := svc.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState() error = %v", err)
+	}
+	if len(state.Workspaces) != 1 {
+		t.Fatalf("expected local workspace to remain single, got %d", len(state.Workspaces))
+	}
+}
+
 type memoryStore struct {
 	state State
 }

@@ -2,23 +2,45 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/allenneverland/gh-workspace/internal/app"
 )
 
+var composeRuntimeModelForLaunch = func(ctx context.Context, opts LaunchOptions) (app.Model, func() error, error) {
+	return composeRuntimeModel(ctx, opts)
+}
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "init" {
-		if err := runInitCommand(context.Background(), os.Args[2:]); err != nil {
-			log.Fatalf("init failed: %v", err)
+	if err := run(os.Args[1:]); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(args []string) error {
+	if len(args) > 0 && args[0] == "init" {
+		if err := runInitCommand(context.Background(), args[1:]); err != nil {
+			return fmt.Errorf("init failed: %w", err)
 		}
-		return
+		return nil
 	}
 
-	model, closeFn, err := composeRuntimeModel(context.Background())
+	cwd, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("failed to compose runtime model: %v", err)
+		return fmt.Errorf("resolve current directory: %w", err)
+	}
+	opts, err := ParseLaunchOptions(args, cwd)
+	if err != nil {
+		return fmt.Errorf("%w\n\n%s", err, launchOptionsUsage())
+	}
+
+	model, closeFn, err := composeRuntimeModelForLaunch(context.Background(), opts)
+	if err != nil {
+		return fmt.Errorf("failed to compose runtime model: %w", err)
 	}
 	if closeFn != nil {
 		defer func() {
@@ -30,6 +52,7 @@ func main() {
 
 	program := tea.NewProgram(model)
 	if _, err := program.Run(); err != nil {
-		log.Fatalf("tui exited with error: %v", err)
+		return fmt.Errorf("tui exited with error: %w", err)
 	}
+	return nil
 }
