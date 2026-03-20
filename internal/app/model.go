@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -62,6 +64,15 @@ type SyncEngine interface {
 
 type WorkspaceState struct {
 	Snapshot workspace.State
+}
+
+type RepoStatusSnapshot struct {
+	PR           workspace.Status
+	CI           workspace.Status
+	Release      workspace.Status
+	LastSyncedAt time.Time
+	IsStale      bool
+	LatestError  string
 }
 
 func NewWorkspaceState(st workspace.State) WorkspaceState {
@@ -305,6 +316,7 @@ type Model struct {
 	LazygitCenterFrameText       string
 	DiffRenderer                 DiffRenderer
 	SyncEngine                   SyncEngine
+	RepoStatusSnapshots          map[string]RepoStatusSnapshot
 	DiffOutput                   string
 	DiffStatus                   string
 	DiffLoading                  bool
@@ -324,6 +336,7 @@ func NewModel(config Config) Model {
 		LazygitSessionManager: lazygitadapter.NewSessionManager(),
 		DiffRenderer:          diffadapter.NewRenderer(),
 		SyncEngine:            syncengine.NewEngine(noopStatusFetcher{}),
+		RepoStatusSnapshots:   make(map[string]RepoStatusSnapshot),
 	}
 }
 
@@ -348,7 +361,63 @@ func (m Model) View() string {
 func (m Model) cloneForUpdate() Model {
 	cloned := m
 	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
+	cloned.RepoStatusSnapshots = cloneRepoStatusSnapshots(m.RepoStatusSnapshots)
 	return cloned
+}
+
+func cloneRepoStatusSnapshots(src map[string]RepoStatusSnapshot) map[string]RepoStatusSnapshot {
+	if src == nil {
+		return nil
+	}
+	cloned := make(map[string]RepoStatusSnapshot, len(src))
+	for key, value := range src {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func repoStatusSnapshotKey(workspaceID, repoID string) string {
+	return strings.TrimSpace(workspaceID) + "/" + strings.TrimSpace(repoID)
+}
+
+func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
+	repo, ok := m.State.CurrentRepo()
+	if !ok {
+		return RepoStatusSnapshot{
+			PR:      workspace.StatusNeutral,
+			CI:      workspace.StatusNeutral,
+			Release: workspace.StatusUnconfigured,
+		}
+	}
+
+	snapshot := RepoStatusSnapshot{
+		PR:      workspace.StatusNeutral,
+		CI:      workspace.StatusNeutral,
+		Release: workspace.StatusNeutral,
+	}
+	if strings.TrimSpace(repo.ReleaseWorkflowRef) == "" {
+		snapshot.Release = workspace.StatusUnconfigured
+	}
+
+	key := repoStatusSnapshotKey(m.State.CurrentWorkspaceID(), repo.ID)
+	stored, ok := m.RepoStatusSnapshots[key]
+	if !ok {
+		return snapshot
+	}
+
+	if stored.PR != "" {
+		snapshot.PR = stored.PR
+	}
+	if stored.CI != "" {
+		snapshot.CI = stored.CI
+	}
+	if stored.Release != "" {
+		snapshot.Release = stored.Release
+	}
+	snapshot.LastSyncedAt = stored.LastSyncedAt
+	snapshot.IsStale = stored.IsStale
+	snapshot.LatestError = stored.LatestError
+	return snapshot
 }
 
 type appWorktreeAdapter struct {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"strings"
+	"time"
 
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
@@ -19,6 +20,8 @@ func renderView(m Model) string {
 		out.WriteString("\n")
 		out.WriteString(m.renderDiffCenter())
 	}
+	out.WriteString("\n\n")
+	out.WriteString(m.renderRightPane())
 	return out.String()
 }
 
@@ -115,4 +118,46 @@ func (m Model) renderDiffCenter() string {
 		return m.DiffStatus
 	}
 	return m.DiffOutput
+}
+
+func (m Model) renderRightPane() string {
+	var out strings.Builder
+	out.WriteString("Right Pane")
+
+	repo, ok := m.State.CurrentRepo()
+	if !ok || repo.ID == "" {
+		out.WriteString("\nrepo: (none)")
+		out.WriteString("\npr: " + string(workspace.StatusNeutral))
+		out.WriteString("\nci: " + string(workspace.StatusNeutral))
+		out.WriteString("\nrelease: " + string(workspace.StatusUnconfigured))
+		out.WriteString("\nlastSyncedAt: -")
+		return out.String()
+	}
+
+	snapshot := m.repoStatusSnapshotForCurrentRepo()
+	out.WriteString("\nrepo: " + repo.Name)
+	out.WriteString("\npr: " + statusLabel(snapshot.PR))
+	out.WriteString("\nci: " + statusLabel(snapshot.CI))
+	out.WriteString("\nrelease: " + statusLabel(snapshot.Release))
+
+	if snapshot.LastSyncedAt.IsZero() {
+		out.WriteString("\nlastSyncedAt: -")
+	} else {
+		out.WriteString("\nlastSyncedAt: " + snapshot.LastSyncedAt.UTC().Format(time.RFC3339))
+	}
+	if snapshot.IsStale {
+		out.WriteString("\n[stale]")
+	}
+	if strings.TrimSpace(snapshot.LatestError) != "" {
+		out.WriteString("\nerror: " + snapshot.LatestError)
+	}
+
+	return out.String()
+}
+
+func statusLabel(st workspace.Status) string {
+	if st == "" {
+		return string(workspace.StatusNeutral)
+	}
+	return string(st)
 }
