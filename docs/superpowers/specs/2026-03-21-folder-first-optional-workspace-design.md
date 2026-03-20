@@ -50,8 +50,9 @@
 
 補充保留規則：
 
-- 保留 ID 只作用於系統 workspace，不作為使用者可選 workspace
-- `gh-workspace -w __local_internal__` 視為非法輸入並報錯
+- 系統 workspace 使用固定 `ID` 與固定 `name`：`__local_internal__`
+- `gh-workspace -w <name>` 僅以 `name` 解析，而且解析時排除系統 workspace
+- `gh-workspace -w __local_internal__` 視為保留名稱，直接報錯
 - 若偵測到舊資料已存在同 ID 的使用者 workspace，啟動時先自動改 ID（例如加 `-legacy` 後綴）再建立系統 workspace
 
 ### 4.3 Folder Mode 單一 repo 不變式
@@ -97,6 +98,7 @@
    - 選中 `__local_internal__` + 該 repo
    - 啟動 `Folder Mode`
 5. 若非 git repo（含路徑不存在/不可讀）：
+   - 確保 `__local_internal__` 存在（first-run 也成立）
    - 清空 `__local_internal__` repo
    - 選中 `__local_internal__`
    - 啟動 `Folder Mode` 空狀態
@@ -139,13 +141,15 @@ Folder Mode 空狀態提供明確訊息：
 
 ### 9.1 CLI 驗收
 
-- `gh-workspace` 在 git repo 目錄 -> Folder Mode + 選中 `$PWD`
+- `gh-workspace` 在 git repo 目錄 -> Folder Mode + 選中 `$PWD` 所屬 repo root
 - `gh-workspace` 在非 git repo 目錄 -> Folder Mode 空狀態
-- `gh-workspace -f <git-repo>` -> Folder Mode 單一 repo 為 `<path>`
+- `gh-workspace -f <git-repo-or-subdir>` -> Folder Mode 單一 repo 為該路徑所屬 repo root
 - `gh-workspace -f <non-git>` -> 清空 Folder repo + 空狀態
 - `gh-workspace -w <existing>` -> Workspace Mode
 - `gh-workspace -w <missing>` -> 報錯退出
 - `-f` + `-w` -> 參數錯誤退出
+- 首次啟動於 non-git 目錄 -> 自動建立 `__local_internal__`，並進空狀態
+- 舊資料若已使用 `__local_internal__` ID -> 啟動時先執行 ID 遷移，再建立系統 workspace
 
 ### 9.2 TUI 驗收
 
