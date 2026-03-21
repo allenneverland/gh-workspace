@@ -35,8 +35,9 @@ type MsgOverlayScanCompleted struct {
 }
 
 type MsgOverlaySaveCompleted struct {
-	State workspace.State
-	Err   error
+	Revision int
+	State    workspace.State
+	Err      error
 }
 
 type MsgSubmitRepoPath struct {

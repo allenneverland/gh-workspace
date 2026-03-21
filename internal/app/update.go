@@ -248,18 +248,6 @@ func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		case msg.Type == tea.KeyShiftTab:
 			m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, false)
 			return m, nil, true
-		case key.Matches(msg, m.Keys.OverlaySave):
-			if m.Overlay.Mode != OverlayModeCreate {
-				return m, nil, true
-			}
-			cmd := m.workspaceOverlaySaveCommand(WorkspaceOverlayDraft{
-				Name:        m.Overlay.CreateNameInput,
-				StagedRepos: append([]RepoCandidate(nil), m.Overlay.StagedRepos...),
-			})
-			if cmd == nil {
-				m.StatusMessage = "workspace overlay save unavailable"
-			}
-			return m, cmd, true
 		}
 
 		if next, cmd, handled := updateWorkspaceOverlayTextInput(m, msg); handled {
@@ -275,6 +263,8 @@ func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 				m.Overlay = m.Overlay.enterCreateMode()
 			}
 			return m, nil, true
+		case key.Matches(msg, m.Keys.OverlaySave):
+			return beginWorkspaceOverlaySave(m)
 		case msg.Type == tea.KeyEnter && m.Overlay.Mode == OverlayModeCreate && m.Overlay.Focus == OverlayFocusCandidateList:
 			m = overlayAddSelectedCandidate(m)
 			return m, nil, true
@@ -398,6 +388,11 @@ func handleOverlayScanCompleted(m Model, msg MsgOverlayScanCompleted) (Model, te
 }
 
 func handleOverlaySaveCompleted(m Model, msg MsgOverlaySaveCompleted) (Model, tea.Cmd) {
+	if !m.Overlay.Active || !m.Overlay.SaveInFlight || msg.Revision != m.Overlay.SaveRevision {
+		return m, nil
+	}
+
+	m.Overlay.SaveInFlight = false
 	if msg.Err != nil {
 		m.StatusMessage = msg.Err.Error()
 		m.Overlay.LastError = msg.Err.Error()
@@ -421,6 +416,33 @@ func handleOverlaySaveCompleted(m Model, msg MsgOverlaySaveCompleted) (Model, te
 		return afterDiff, tea.Batch(syncCmd, diffCmd)
 	}
 	return next, syncCmd
+}
+
+func beginWorkspaceOverlaySave(m Model) (Model, tea.Cmd, bool) {
+	if m.Overlay.Mode != OverlayModeCreate {
+		return m, nil, true
+	}
+	if m.Overlay.Focus != OverlayFocusStagedRepoList {
+		return m, nil, false
+	}
+	if m.Overlay.SaveInFlight {
+		return m, nil, true
+	}
+
+	revision := m.Overlay.SaveRevision + 1
+	cmd := m.workspaceOverlaySaveCommand(revision, WorkspaceOverlayDraft{
+		Name:        m.Overlay.CreateNameInput,
+		StagedRepos: append([]RepoCandidate(nil), m.Overlay.StagedRepos...),
+	})
+	if cmd == nil {
+		m.StatusMessage = "workspace overlay save unavailable"
+		return m, nil, true
+	}
+
+	m.Overlay.SaveInFlight = true
+	m.Overlay.SaveRevision = revision
+	m.Overlay.LastError = ""
+	return m, cmd, true
 }
 
 func overlayAddSelectedCandidate(m Model) Model {

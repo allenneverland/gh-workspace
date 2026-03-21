@@ -64,6 +64,88 @@ func TestOverlay_Create_TextInputWDoesNotToggleOverlay(t *testing.T) {
 	}
 }
 
+func TestOverlay_Create_TextInputSDoesNotTriggerSave(t *testing.T) {
+	tests := []struct {
+		name     string
+		focus    OverlayFocus
+		setup    func(*Model)
+		assertFn func(t *testing.T, before, after Model, cmd tea.Cmd)
+	}{
+		{
+			name:  "create-name-input",
+			focus: OverlayFocusCreateNameInput,
+			setup: func(m *Model) {
+				m.Overlay.CreateNameInput = "team"
+			},
+			assertFn: func(t *testing.T, before, after Model, cmd tea.Cmd) {
+				t.Helper()
+				if cmd != nil {
+					t.Fatal("expected no command when typing in create name input")
+				}
+				if after.Overlay.CreateNameInput != before.Overlay.CreateNameInput+"s" {
+					t.Fatalf("expected create name input %q, got %q", before.Overlay.CreateNameInput+"s", after.Overlay.CreateNameInput)
+				}
+			},
+		},
+		{
+			name:  "scan-path-input",
+			focus: OverlayFocusScanPathInput,
+			setup: func(m *Model) {
+				m.Overlay.ScanPathInput = "/tmp/projects"
+			},
+			assertFn: func(t *testing.T, before, after Model, cmd tea.Cmd) {
+				t.Helper()
+				if after.Overlay.ScanPathInput != before.Overlay.ScanPathInput+"s" {
+					t.Fatalf("expected scan path input %q, got %q", before.Overlay.ScanPathInput+"s", after.Overlay.ScanPathInput)
+				}
+				if cmd == nil {
+					t.Fatal("expected scan path input typing to schedule a scan")
+				}
+				msg := cmd()
+				if _, ok := msg.(MsgOverlayScanScheduled); !ok {
+					t.Fatalf("expected scan scheduled message %T, got %T", MsgOverlayScanScheduled{}, msg)
+				}
+			},
+		},
+		{
+			name:  "candidate-query",
+			focus: OverlayFocusCandidateList,
+			setup: func(m *Model) {
+				m.Overlay.CandidateQuery = "api"
+			},
+			assertFn: func(t *testing.T, before, after Model, cmd tea.Cmd) {
+				t.Helper()
+				if cmd != nil {
+					t.Fatal("expected no command when typing in candidate query")
+				}
+				if after.Overlay.CandidateQuery != before.Overlay.CandidateQuery+"s" {
+					t.Fatalf("expected candidate query %q, got %q", before.Overlay.CandidateQuery+"s", after.Overlay.CandidateQuery)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := seededCreateOverlayModelForScanTests()
+			m.Overlay.Focus = tt.focus
+			m.WorkspaceOverlayDraftCommitter = &fakeWorkspaceOverlayDraftCommitter{}
+			tt.setup(&m)
+
+			updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+			got := updated.(Model)
+
+			if !got.Overlay.Active {
+				t.Fatalf("expected overlay to remain active, got %#v", got.Overlay)
+			}
+			if got.Overlay.SaveInFlight {
+				t.Fatalf("expected typing to not start save, got %#v", got.Overlay)
+			}
+			tt.assertFn(t, m, got, cmd)
+		})
+	}
+}
+
 func TestOverlay_Create_ScanPathInputChangeSchedulesScanWithRevision(t *testing.T) {
 	m := seededCreateOverlayModelForScanTests()
 	m.Overlay.Focus = OverlayFocusScanPathInput

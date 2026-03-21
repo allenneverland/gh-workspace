@@ -551,7 +551,7 @@ func (m Model) workspaceOverlayScanCommand(msg tea.Msg) tea.Cmd {
 	}
 }
 
-func (m Model) workspaceOverlaySaveCommand(draft WorkspaceOverlayDraft) tea.Cmd {
+func (m Model) workspaceOverlaySaveCommand(revision int, draft WorkspaceOverlayDraft) tea.Cmd {
 	if m.WorkspaceOverlayDraftCommitter == nil {
 		return nil
 	}
@@ -560,8 +560,9 @@ func (m Model) workspaceOverlaySaveCommand(draft WorkspaceOverlayDraft) tea.Cmd 
 	return func() tea.Msg {
 		state, err := m.WorkspaceOverlayDraftCommitter.CommitWorkspaceOverlayDraft(context.Background(), draft)
 		return MsgOverlaySaveCompleted{
-			State: cloneWorkspaceState(state),
-			Err:   err,
+			Revision: revision,
+			State:    cloneWorkspaceState(state),
+			Err:      err,
 		}
 	}
 }

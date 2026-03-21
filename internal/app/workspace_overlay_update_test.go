@@ -171,6 +171,7 @@ func TestOverlay_Save_SuccessClosesOverlayAndSwitchesWorkspaceMode(t *testing.T)
 	}
 	m := seededCreateOverlayModelForSaveTests(committer)
 	m.UIMode = ModeFolder
+	m.Overlay.Focus = OverlayFocusStagedRepoList
 	m.Overlay.CreateNameInput = "team-b"
 	m.Overlay.StagedRepos = []RepoCandidate{
 		{Name: "web", Path: "/tmp/web"},
@@ -186,6 +187,9 @@ func TestOverlay_Save_SuccessClosesOverlayAndSwitchesWorkspaceMode(t *testing.T)
 	completed, ok := msg.(MsgOverlaySaveCompleted)
 	if !ok {
 		t.Fatalf("expected save completion message %T, got %T", MsgOverlaySaveCompleted{}, msg)
+	}
+	if completed.Revision != 1 {
+		t.Fatalf("expected save revision %d, got %d", 1, completed.Revision)
 	}
 	if completed.Err != nil {
 		t.Fatalf("expected nil save error, got %v", completed.Err)
@@ -225,6 +229,7 @@ func TestOverlay_Save_FailureKeepsOverlayOpenAndPreservesDraft(t *testing.T) {
 	committer := &fakeWorkspaceOverlayDraftCommitter{err: errors.New("save sentinel")}
 	m := seededCreateOverlayModelForSaveTests(committer)
 	m.UIMode = ModeFolder
+	m.Overlay.Focus = OverlayFocusStagedRepoList
 	m.Overlay.CreateNameInput = "team-c"
 	m.Overlay.ScanPathInput = "/tmp/projects"
 	m.Overlay.CandidateQuery = "api"
@@ -276,6 +281,7 @@ func TestOverlay_Save_FailureKeepsOverlayOpenAndPreservesDraft(t *testing.T) {
 func TestOverlay_Save_DuplicateWorkspaceNameReturnsWorkspaceAlreadyExists(t *testing.T) {
 	committer := &fakeWorkspaceOverlayDraftCommitter{err: errors.New("workspace already exists")}
 	m := seededCreateOverlayModelForSaveTests(committer)
+	m.Overlay.Focus = OverlayFocusStagedRepoList
 	m.Overlay.CreateNameInput = "team-a"
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
@@ -313,6 +319,7 @@ func TestOverlay_Save_EmptyStagedReposIsAllowed(t *testing.T) {
 	}
 	m := seededCreateOverlayModelForSaveTests(committer)
 	m.UIMode = ModeFolder
+	m.Overlay.Focus = OverlayFocusStagedRepoList
 	m.Overlay.CreateNameInput = "empty"
 	m.Overlay.StagedRepos = nil
 
@@ -343,6 +350,73 @@ func TestOverlay_Save_EmptyStagedReposIsAllowed(t *testing.T) {
 	}
 	if len(committer.lastDraft.StagedRepos) != 0 {
 		t.Fatalf("expected empty staged repo draft, got %#v", committer.lastDraft.StagedRepos)
+	}
+}
+
+func TestOverlay_Save_RepeatedKeyPressesWhileInFlightDoNotDispatchDuplicateSaveCommands(t *testing.T) {
+	committer := &fakeWorkspaceOverlayDraftCommitter{}
+	m := seededCreateOverlayModelForSaveTests(committer)
+	m.Overlay.Focus = OverlayFocusStagedRepoList
+	m.Overlay.CreateNameInput = "team-b"
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("expected first save key press to dispatch a save command")
+	}
+
+	inFlight := updated.(Model)
+	if !inFlight.Overlay.SaveInFlight {
+		t.Fatalf("expected save to be marked in flight, got %#v", inFlight.Overlay)
+	}
+	if inFlight.Overlay.SaveRevision != 1 {
+		t.Fatalf("expected save revision %d, got %d", 1, inFlight.Overlay.SaveRevision)
+	}
+
+	updated, secondCmd := inFlight.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if secondCmd != nil {
+		t.Fatal("expected repeated save key while in flight to not dispatch a second save command")
+	}
+
+	stillInFlight := updated.(Model)
+	if !stillInFlight.Overlay.SaveInFlight {
+		t.Fatalf("expected save to remain in flight, got %#v", stillInFlight.Overlay)
+	}
+	if stillInFlight.Overlay.SaveRevision != 1 {
+		t.Fatalf("expected save revision to remain %d, got %d", 1, stillInFlight.Overlay.SaveRevision)
+	}
+}
+
+func TestOverlay_Save_StaleCompletionMessageIgnored(t *testing.T) {
+	committer := &fakeWorkspaceOverlayDraftCommitter{}
+	m := seededCreateOverlayModelForSaveTests(committer)
+	m.UIMode = ModeFolder
+	m.Overlay.Focus = OverlayFocusStagedRepoList
+	m.Overlay.CreateNameInput = "team-b"
+	m.Overlay.StagedRepos = []RepoCandidate{{Name: "web", Path: "/tmp/web"}}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("expected save key to dispatch a save command")
+	}
+
+	inFlight := updated.(Model)
+	ignoredState := workspace.State{
+		SelectedWorkspaceID: "ws-stale",
+		Workspaces:          []workspace.Workspace{{ID: "ws-stale", Name: "stale"}},
+	}
+	updated, _ = inFlight.Update(MsgOverlaySaveCompleted{
+		Revision: inFlight.Overlay.SaveRevision - 1,
+		State:    ignoredState,
+	})
+	got := updated.(Model)
+	if got.UIMode != ModeFolder {
+		t.Fatalf("expected UI mode to remain %q, got %q", ModeFolder, got.UIMode)
+	}
+	if got.State.CurrentWorkspaceID() == "ws-stale" {
+		t.Fatalf("expected stale completion state to be ignored, got %#v", got.State.Snapshot)
+	}
+	if !got.Overlay.Active || !got.Overlay.SaveInFlight {
+		t.Fatalf("expected overlay save to remain in flight after stale completion, got %#v", got.Overlay)
 	}
 }
 

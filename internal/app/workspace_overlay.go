@@ -42,6 +42,9 @@ type WorkspaceOverlayState struct {
 	ScanInFlight bool
 	ScanRevision int
 
+	SaveInFlight bool
+	SaveRevision int
+
 	LastError string
 }
 
@@ -80,6 +83,8 @@ func (s WorkspaceOverlayState) enterCreateMode() WorkspaceOverlayState {
 	next.SelectedCandidateIndex = -1
 	next.ScanInFlight = false
 	next.ScanRevision = 0
+	next.SaveInFlight = false
+	next.SaveRevision = 0
 	next.LastError = ""
 	return next
 }
