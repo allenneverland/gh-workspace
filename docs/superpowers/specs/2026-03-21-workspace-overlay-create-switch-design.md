@@ -14,7 +14,7 @@
 關鍵體驗要求（已確認）：
 
 - `w` 在 `folder mode` 與 `workspace mode` 都可用
-- Overlay 打開後左側上方有路徑輸入框
+- 進入 create 模式後左側上方有路徑輸入框
 - 路徑輸入「即時掃描」（不需 enter）
 - `c` 進入建立流程；`s` 一鍵儲存 + 關閉 + 切換
 - 建立流程資料皆為暫存；`esc` 直接丟棄全部草稿
@@ -34,7 +34,7 @@
 ### 3.1 開啟與切換
 
 1. 使用者按 `w` 開啟 overlay（任一 UI mode 皆可）
-2. 預設顯示 workspace list（右側）與 repo 掃描區（左側）
+2. 預設只顯示 workspace list（不顯示 repo 掃描輸入框與 fzf 候選）
 3. 在 workspace list 選中項目後按 `enter`：
    - 關閉 overlay
    - 切換到該 workspace
@@ -61,14 +61,14 @@
 
 ### 4.1 Overlay 版面
 
-- 左側：
-  - `scan path` 輸入框（預設值：啟動時 cwd）
-  - fzf-like 候選 repo list
-- 右側（switch 模式）：
-  - workspace list
+- switch 模式：
+  - workspace list（無輸入框、無 fzf 候選）
 - 右側（create 模式）：
   - workspace name 輸入框
   - staged repos list
+- 左側（create 模式）：
+  - `scan path` 輸入框（預設值：啟動時 cwd）
+  - fzf-like 候選 repo list
 
 ### 4.2 鍵位
 
