@@ -67,6 +67,10 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		return toggleAutoPolling(m)
 	case MsgSyncRefreshCompleted:
 		return handleSyncRefreshCompleted(m, msg)
+	case MsgOverlayScanScheduled:
+		return handleOverlayScanScheduled(m, msg)
+	case MsgOverlayScanCompleted:
+		return handleOverlayScanCompleted(m, msg)
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
@@ -135,11 +139,12 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if key.Matches(msg, m.Keys.Quit) {
 			return m, tea.Quit
 		}
-		var handled bool
 		if m.Overlay.Active {
-			m, handled = updateWorkspaceOverlayKey(m, msg)
+			var cmd tea.Cmd
+			var handled bool
+			m, cmd, handled = updateWorkspaceOverlayKey(m, msg)
 			if handled {
-				return m, nil
+				return m, cmd
 			}
 		}
 		if tab, ok := tabFromKey(m, msg); ok {
@@ -151,11 +156,13 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if diffTabBlocksMutatingKeys(m, msg) {
 			return m, nil
 		}
+		var handled bool
 		switch {
 		case key.Matches(msg, m.Keys.WorkspaceOverlay):
-			m, handled = updateWorkspaceOverlayKey(m, msg)
+			var cmd tea.Cmd
+			m, cmd, handled = updateWorkspaceOverlayKey(m, msg)
 			if handled {
-				return m, nil
+				return m, cmd
 			}
 		case key.Matches(msg, m.Keys.AddRepo):
 			if m.UIMode == ModeFolder {
@@ -224,32 +231,238 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, bool) {
+func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	defaultScanPath := workspaceOverlayDefaultScanPath(m.State)
 
-	switch {
-	case key.Matches(msg, m.Keys.WorkspaceOverlay):
+	if key.Matches(msg, m.Keys.WorkspaceOverlay) {
 		if m.Overlay.Active {
 			m.Overlay = resetWorkspaceOverlay(defaultScanPath)
 		} else {
 			m.Overlay = openWorkspaceOverlay(m.State, defaultScanPath)
 		}
-		return m, true
-	case !m.Overlay.Active:
-		return m, false
+		return m, nil, true
+	}
+
+	if !m.Overlay.Active {
+		return m, nil, false
+	}
+
+	switch {
 	case msg.Type == tea.KeyEsc:
 		m.Overlay = resetWorkspaceOverlay(defaultScanPath)
-		return m, true
+		return m, nil, true
+	case msg.Type == tea.KeyTab:
+		m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, true)
+		return m, nil, true
+	case msg.Type == tea.KeyShiftTab:
+		m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, false)
+		return m, nil, true
+	}
+
+	if next, cmd, handled := updateWorkspaceOverlayTextInput(m, msg); handled {
+		return next, cmd, true
+	}
+
+	switch {
 	case key.Matches(msg, m.Keys.OverlayCreate):
 		if m.Overlay.Mode == OverlayModeSwitch {
 			m.Overlay = m.Overlay.enterCreateMode()
 		}
-		return m, true
+		return m, nil, true
 	case key.Matches(msg, m.Keys.OverlaySave):
-		return m, true
+		return m, nil, true
+	case msg.Type == tea.KeyEnter && m.Overlay.Mode == OverlayModeCreate && m.Overlay.Focus == OverlayFocusCandidateList:
+		m = overlayAddSelectedCandidate(m)
+		return m, nil, true
 	default:
+		return m, nil, false
+	}
+}
+
+func updateWorkspaceOverlayTextInput(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if !m.Overlay.Active || m.Overlay.Mode != OverlayModeCreate {
+		return m, nil, false
+	}
+
+	switch m.Overlay.Focus {
+	case OverlayFocusScanPathInput:
+		next, cmd, handled := updateOverlayScanPathInput(m, msg)
+		if handled {
+			return next, cmd, true
+		}
+	case OverlayFocusCreateNameInput:
+		next, handled := updateOverlayStringInput(m, &m.Overlay.CreateNameInput, msg)
+		if handled {
+			m = next
+			m.Overlay.LastError = ""
+			return m, nil, true
+		}
+	case OverlayFocusCandidateList:
+		next, handled := updateOverlayStringInput(m, &m.Overlay.CandidateQuery, msg)
+		if handled {
+			m = next
+			m.Overlay.SelectedCandidateIndex = candidateSelectionIndex(m.Overlay.Candidates, m.Overlay.CandidateQuery, 0)
+			m.Overlay.LastError = ""
+			return m, nil, true
+		}
+	}
+
+	return m, nil, false
+}
+
+func updateOverlayStringInput(m Model, input *string, msg tea.KeyMsg) (Model, bool) {
+	next, changed := applyOverlayTextInput(*input, msg)
+	if !changed {
 		return m, false
 	}
+	*input = next
+	return m, true
+}
+
+func updateOverlayScanPathInput(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	next, changed := applyOverlayTextInput(m.Overlay.ScanPathInput, msg)
+	if !changed {
+		return m, nil, false
+	}
+
+	m.Overlay.ScanPathInput = next
+	m.Overlay.ScanRevision++
+	m.Overlay.ScanInFlight = true
+	m.Overlay.LastError = ""
+	revision := m.Overlay.ScanRevision
+
+	return m, func() tea.Msg {
+		return MsgOverlayScanScheduled{Revision: revision}
+	}, true
+}
+
+func applyOverlayTextInput(current string, msg tea.KeyMsg) (string, bool) {
+	switch msg.Type {
+	case tea.KeyRunes:
+		if len(msg.Runes) == 0 {
+			return current, false
+		}
+		return current + string(msg.Runes), true
+	case tea.KeySpace:
+		return current + " ", true
+	case tea.KeyBackspace, tea.KeyDelete:
+		if current == "" {
+			return current, false
+		}
+		runes := []rune(current)
+		if len(runes) == 0 {
+			return current, false
+		}
+		return string(runes[:len(runes)-1]), true
+	default:
+		return current, false
+	}
+}
+
+func updateOverlayScanScheduled(m Model, msg MsgOverlayScanScheduled) (Model, bool) {
+	if !m.Overlay.Active || msg.Revision != m.Overlay.ScanRevision {
+		return m, false
+	}
+
+	m.Overlay.ScanInFlight = true
+	m.Overlay.LastError = ""
+	return m, true
+}
+
+func handleOverlayScanScheduled(m Model, msg MsgOverlayScanScheduled) (Model, tea.Cmd) {
+	updated, matched := updateOverlayScanScheduled(m, msg)
+	if !matched {
+		return m, nil
+	}
+	return updated, nil
+}
+
+func handleOverlayScanCompleted(m Model, msg MsgOverlayScanCompleted) (Model, tea.Cmd) {
+	if !m.Overlay.Active || msg.Revision != m.Overlay.ScanRevision {
+		return m, nil
+	}
+
+	m.Overlay.ScanInFlight = false
+	if msg.Err != nil {
+		m.Overlay.LastError = "scan failed: " + msg.Err.Error()
+		return m, nil
+	}
+
+	m.Overlay.Candidates = append([]RepoCandidate(nil), msg.Candidates...)
+	m.Overlay.SelectedCandidateIndex = candidateSelectionIndex(m.Overlay.Candidates, m.Overlay.CandidateQuery, 0)
+	m.Overlay.LastError = ""
+	return m, nil
+}
+
+func overlayAddSelectedCandidate(m Model) Model {
+	candidate, ok := selectedOverlayCandidate(m)
+	if !ok {
+		return m
+	}
+
+	for _, staged := range m.Overlay.StagedRepos {
+		if strings.TrimSpace(staged.Path) == strings.TrimSpace(candidate.Path) {
+			m.Overlay.LastError = "already added"
+			return m
+		}
+	}
+
+	m.Overlay.StagedRepos = append(m.Overlay.StagedRepos, candidate)
+	m.Overlay.LastError = ""
+	return m
+}
+
+func selectedOverlayCandidate(m Model) (RepoCandidate, bool) {
+	candidates := FilterCandidates(m.Overlay.Candidates, m.Overlay.CandidateQuery)
+	idx := candidateSelectionIndex(candidates, "", m.Overlay.SelectedCandidateIndex)
+	if idx < 0 || idx >= len(candidates) {
+		return RepoCandidate{}, false
+	}
+	return candidates[idx], true
+}
+
+func candidateSelectionIndex(candidates []RepoCandidate, query string, current int) int {
+	visible := FilterCandidates(candidates, query)
+	if len(visible) == 0 {
+		return -1
+	}
+	if current < 0 || current >= len(visible) {
+		return 0
+	}
+	return current
+}
+
+func cycleWorkspaceOverlayFocus(overlay WorkspaceOverlayState, forward bool) WorkspaceOverlayState {
+	if overlay.Mode != OverlayModeCreate {
+		overlay.Focus = OverlayFocusWorkspaceList
+		return overlay
+	}
+
+	order := []OverlayFocus{
+		OverlayFocusCreateNameInput,
+		OverlayFocusScanPathInput,
+		OverlayFocusCandidateList,
+		OverlayFocusStagedRepoList,
+	}
+	current := 0
+	for i, focus := range order {
+		if overlay.Focus == focus {
+			current = i
+			break
+		}
+	}
+
+	if forward {
+		current = (current + 1) % len(order)
+	} else {
+		current--
+		if current < 0 {
+			current = len(order) - 1
+		}
+	}
+
+	overlay.Focus = order[current]
+	return overlay
 }
 
 func selectAdjacentWorkspaceModeWorkspace(m Model, forward bool) (Model, bool) {

@@ -24,6 +24,16 @@ type MsgCloseWorkspaceOverlay struct{}
 
 type MsgEnterWorkspaceOverlayCreate struct{}
 
+type MsgOverlayScanScheduled struct {
+	Revision int
+}
+
+type MsgOverlayScanCompleted struct {
+	Revision   int
+	Candidates []RepoCandidate
+	Err        error
+}
+
 type MsgSubmitRepoPath struct {
 	Path string
 }

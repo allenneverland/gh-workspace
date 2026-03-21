@@ -78,6 +78,8 @@ func (s WorkspaceOverlayState) enterCreateMode() WorkspaceOverlayState {
 	next.Candidates = nil
 	next.StagedRepos = nil
 	next.SelectedCandidateIndex = -1
+	next.ScanInFlight = false
+	next.ScanRevision = 0
 	next.LastError = ""
 	return next
 }
