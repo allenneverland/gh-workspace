@@ -72,6 +72,8 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		return handleOverlayScanScheduled(m, msg)
 	case MsgOverlayScanCompleted:
 		return handleOverlayScanCompleted(m, msg)
+	case MsgOverlaySaveCompleted:
+		return handleOverlaySaveCompleted(m, msg)
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
@@ -246,6 +248,18 @@ func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		case msg.Type == tea.KeyShiftTab:
 			m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, false)
 			return m, nil, true
+		case key.Matches(msg, m.Keys.OverlaySave):
+			if m.Overlay.Mode != OverlayModeCreate {
+				return m, nil, true
+			}
+			cmd := m.workspaceOverlaySaveCommand(WorkspaceOverlayDraft{
+				Name:        m.Overlay.CreateNameInput,
+				StagedRepos: append([]RepoCandidate(nil), m.Overlay.StagedRepos...),
+			})
+			if cmd == nil {
+				m.StatusMessage = "workspace overlay save unavailable"
+			}
+			return m, cmd, true
 		}
 
 		if next, cmd, handled := updateWorkspaceOverlayTextInput(m, msg); handled {
@@ -260,8 +274,6 @@ func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 			if m.Overlay.Mode == OverlayModeSwitch {
 				m.Overlay = m.Overlay.enterCreateMode()
 			}
-			return m, nil, true
-		case key.Matches(msg, m.Keys.OverlaySave):
 			return m, nil, true
 		case msg.Type == tea.KeyEnter && m.Overlay.Mode == OverlayModeCreate && m.Overlay.Focus == OverlayFocusCandidateList:
 			m = overlayAddSelectedCandidate(m)
@@ -383,6 +395,32 @@ func handleOverlayScanCompleted(m Model, msg MsgOverlayScanCompleted) (Model, te
 	m.Overlay.SelectedCandidateIndex = candidateSelectionIndex(m.Overlay.Candidates, m.Overlay.CandidateQuery, 0)
 	m.Overlay.LastError = ""
 	return m, nil
+}
+
+func handleOverlaySaveCompleted(m Model, msg MsgOverlaySaveCompleted) (Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.StatusMessage = msg.Err.Error()
+		m.Overlay.LastError = msg.Err.Error()
+		return m, nil
+	}
+
+	m.State = NewWorkspaceState(msg.State)
+	m.UIMode = ModeWorkspace
+	m.Overlay = resetWorkspaceOverlay(workspaceOverlayDefaultScanPath(m.State))
+	m = publishSyncState(m)
+
+	next, syncCmd := syncOnSelectionChanged(m)
+	if next.ActiveTab == TabLazygit {
+		next = ensureLazygitSession(next)
+		next = resizeLazygitViewport(next)
+		afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
+		return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
+	}
+	if next.ActiveTab == TabDiff {
+		afterDiff, diffCmd := requestDiffRender(next)
+		return afterDiff, tea.Batch(syncCmd, diffCmd)
+	}
+	return next, syncCmd
 }
 
 func overlayAddSelectedCandidate(m Model) Model {

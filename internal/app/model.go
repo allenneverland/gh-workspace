@@ -32,17 +32,18 @@ const (
 )
 
 type Config struct {
-	InitialState            workspace.State
-	InitialUIMode           UIMode
-	WorktreeAdapter         WorktreeAdapter
-	LazygitSessionManager   LazygitSessionManager
-	DiffRenderer            DiffRenderer
-	SyncEngine              SyncEngine
-	StateStore              storepkg.Store
-	SyncStatePublisher      SyncStatePublisher
-	RepoPathSubmitter       RepoPathSubmitter
-	WorkspaceOverlayScanner WorkspaceOverlayScanner
-	DefaultOverlayScanPath  string
+	InitialState                   workspace.State
+	InitialUIMode                  UIMode
+	WorktreeAdapter                WorktreeAdapter
+	LazygitSessionManager          LazygitSessionManager
+	DiffRenderer                   DiffRenderer
+	SyncEngine                     SyncEngine
+	StateStore                     storepkg.Store
+	SyncStatePublisher             SyncStatePublisher
+	RepoPathSubmitter              RepoPathSubmitter
+	WorkspaceOverlayScanner        WorkspaceOverlayScanner
+	WorkspaceOverlayDraftCommitter WorkspaceOverlayDraftCommitter
+	DefaultOverlayScanPath         string
 }
 
 type WorktreeItem struct {
@@ -99,11 +100,22 @@ type WorkspaceOverlayScanner interface {
 	ScanRepoCandidates(ctx context.Context, rootPath string) ([]RepoCandidate, error)
 }
 
+type WorkspaceOverlayDraft struct {
+	Name        string
+	StagedRepos []RepoCandidate
+}
+
+type WorkspaceOverlayDraftCommitter interface {
+	CommitWorkspaceOverlayDraft(ctx context.Context, draft WorkspaceOverlayDraft) (workspace.State, error)
+}
+
 type WorkspaceState struct {
 	Snapshot workspace.State
 }
 
 type RepoStatusSnapshot = workspace.RepoStatusSnapshot
+
+var DefaultWorkspaceOverlayDraftCommitterFactory func(storepkg.Store) WorkspaceOverlayDraftCommitter
 
 func NewWorkspaceState(st workspace.State) WorkspaceState {
 	state := WorkspaceState{Snapshot: cloneWorkspaceState(st)}
@@ -372,42 +384,43 @@ func normalizeWorkspaceModeState(state *WorkspaceState) bool {
 }
 
 type Model struct {
-	ActiveTab                    Tab
-	UIMode                       UIMode
-	LeftPaneWidth                int
-	CenterPaneWidth              int
-	RightPaneWidth               int
-	WindowWidth                  int
-	WindowHeight                 int
-	State                        WorkspaceState
-	Overlay                      WorkspaceOverlayState
-	Keys                         KeyMap
-	AddRepoRequested             bool
-	RepoPathInput                RepoPathInput
-	RepoPathInputActive          bool
-	StatusMessage                string
-	StateStore                   storepkg.Store
-	SyncStatePublisher           SyncStatePublisher
-	RepoPathSubmitter            RepoPathSubmitter
-	WorkspaceOverlayScanner      WorkspaceOverlayScanner
-	DefaultOverlayScanPath       string
-	WorktreeAdapter              WorktreeAdapter
-	Worktrees                    []WorktreeItem
-	LazygitSessionManager        LazygitSessionManager
-	LazygitSessionID             string
-	LazygitCenterFrameText       string
-	DiffRenderer                 DiffRenderer
-	SyncEngine                   SyncEngine
-	DiffOutput                   string
-	DiffStatus                   string
-	DiffLoading                  bool
-	diffRenderRequestID          int
-	diffRenderInFlight           bool
-	diffRenderPending            bool
-	syncCommandInFlight          bool
-	syncRefreshPending           bool
-	syncTickPending              bool
-	lazygitFrameListenerInFlight bool
+	ActiveTab                      Tab
+	UIMode                         UIMode
+	LeftPaneWidth                  int
+	CenterPaneWidth                int
+	RightPaneWidth                 int
+	WindowWidth                    int
+	WindowHeight                   int
+	State                          WorkspaceState
+	Overlay                        WorkspaceOverlayState
+	Keys                           KeyMap
+	AddRepoRequested               bool
+	RepoPathInput                  RepoPathInput
+	RepoPathInputActive            bool
+	StatusMessage                  string
+	StateStore                     storepkg.Store
+	SyncStatePublisher             SyncStatePublisher
+	RepoPathSubmitter              RepoPathSubmitter
+	WorkspaceOverlayScanner        WorkspaceOverlayScanner
+	WorkspaceOverlayDraftCommitter WorkspaceOverlayDraftCommitter
+	DefaultOverlayScanPath         string
+	WorktreeAdapter                WorktreeAdapter
+	Worktrees                      []WorktreeItem
+	LazygitSessionManager          LazygitSessionManager
+	LazygitSessionID               string
+	LazygitCenterFrameText         string
+	DiffRenderer                   DiffRenderer
+	SyncEngine                     SyncEngine
+	DiffOutput                     string
+	DiffStatus                     string
+	DiffLoading                    bool
+	diffRenderRequestID            int
+	diffRenderInFlight             bool
+	diffRenderPending              bool
+	syncCommandInFlight            bool
+	syncRefreshPending             bool
+	syncTickPending                bool
+	lazygitFrameListenerInFlight   bool
 }
 
 func NewModel(config Config) Model {
@@ -422,24 +435,25 @@ func NewModel(config Config) Model {
 	}
 
 	m := Model{
-		ActiveTab:               TabOverview,
-		UIMode:                  mode,
-		LeftPaneWidth:           30,
-		CenterPaneWidth:         80,
-		RightPaneWidth:          40,
-		State:                   NewWorkspaceState(state),
-		Overlay:                 resetWorkspaceOverlay(strings.TrimSpace(config.DefaultOverlayScanPath)),
-		Keys:                    DefaultKeyMap(),
-		RepoPathInput:           newRepoPathInput(),
-		StateStore:              config.StateStore,
-		SyncStatePublisher:      config.SyncStatePublisher,
-		RepoPathSubmitter:       config.RepoPathSubmitter,
-		WorkspaceOverlayScanner: config.WorkspaceOverlayScanner,
-		DefaultOverlayScanPath:  strings.TrimSpace(config.DefaultOverlayScanPath),
-		WorktreeAdapter:         config.WorktreeAdapter,
-		LazygitSessionManager:   config.LazygitSessionManager,
-		DiffRenderer:            config.DiffRenderer,
-		SyncEngine:              config.SyncEngine,
+		ActiveTab:                      TabOverview,
+		UIMode:                         mode,
+		LeftPaneWidth:                  30,
+		CenterPaneWidth:                80,
+		RightPaneWidth:                 40,
+		State:                          NewWorkspaceState(state),
+		Overlay:                        resetWorkspaceOverlay(strings.TrimSpace(config.DefaultOverlayScanPath)),
+		Keys:                           DefaultKeyMap(),
+		RepoPathInput:                  newRepoPathInput(),
+		StateStore:                     config.StateStore,
+		SyncStatePublisher:             config.SyncStatePublisher,
+		RepoPathSubmitter:              config.RepoPathSubmitter,
+		WorkspaceOverlayScanner:        config.WorkspaceOverlayScanner,
+		WorkspaceOverlayDraftCommitter: config.WorkspaceOverlayDraftCommitter,
+		DefaultOverlayScanPath:         strings.TrimSpace(config.DefaultOverlayScanPath),
+		WorktreeAdapter:                config.WorktreeAdapter,
+		LazygitSessionManager:          config.LazygitSessionManager,
+		DiffRenderer:                   config.DiffRenderer,
+		SyncEngine:                     config.SyncEngine,
 	}
 	if m.WorktreeAdapter == nil {
 		m.WorktreeAdapter = appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)}
@@ -452,6 +466,9 @@ func NewModel(config Config) Model {
 	}
 	if m.SyncEngine == nil {
 		m.SyncEngine = syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{})
+	}
+	if m.WorkspaceOverlayDraftCommitter == nil && config.StateStore != nil && DefaultWorkspaceOverlayDraftCommitterFactory != nil {
+		m.WorkspaceOverlayDraftCommitter = DefaultWorkspaceOverlayDraftCommitterFactory(config.StateStore)
 	}
 	if m.UIMode == ModeWorkspace {
 		_ = normalizeWorkspaceModeState(&m.State)
@@ -530,6 +547,21 @@ func (m Model) workspaceOverlayScanCommand(msg tea.Msg) tea.Cmd {
 			Revision:   scheduled.Revision,
 			Candidates: append([]RepoCandidate(nil), candidates...),
 			Err:        err,
+		}
+	}
+}
+
+func (m Model) workspaceOverlaySaveCommand(draft WorkspaceOverlayDraft) tea.Cmd {
+	if m.WorkspaceOverlayDraftCommitter == nil {
+		return nil
+	}
+
+	draft.StagedRepos = append([]RepoCandidate(nil), draft.StagedRepos...)
+	return func() tea.Msg {
+		state, err := m.WorkspaceOverlayDraftCommitter.CommitWorkspaceOverlayDraft(context.Background(), draft)
+		return MsgOverlaySaveCompleted{
+			State: cloneWorkspaceState(state),
+			Err:   err,
 		}
 	}
 }

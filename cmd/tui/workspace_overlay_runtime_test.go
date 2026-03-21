@@ -188,6 +188,84 @@ func TestWorkspaceOverlayScanner_ModelUpdate_PropagatesScannerError(t *testing.T
 	}
 }
 
+func TestWorkspaceOverlayDraftCommitter_CommitCreatesWorkspaceAddsReposAndSelectsFirstRepo(t *testing.T) {
+	store := &runtimeMemoryStateStore{state: localWorkspaceStateForRuntime()}
+	committer := runtimeWorkspaceOverlayDraftCommitter{stateStore: store}
+
+	got, err := committer.CommitWorkspaceOverlayDraft(context.Background(), app.WorkspaceOverlayDraft{
+		Name: " team-b ",
+		StagedRepos: []app.RepoCandidate{
+			{Name: "web", Path: "/tmp/web"},
+			{Name: "api", Path: "/tmp/api"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CommitWorkspaceOverlayDraft() error = %v", err)
+	}
+
+	ws, ok := runtimeWorkspaceByName(got, "team-b")
+	if !ok {
+		t.Fatalf("expected workspace %q in %#v", "team-b", got.Workspaces)
+	}
+	if got.SelectedWorkspaceID != ws.ID {
+		t.Fatalf("expected selected workspace %q, got %q", ws.ID, got.SelectedWorkspaceID)
+	}
+	if len(ws.Repos) != 2 {
+		t.Fatalf("expected 2 repos, got %#v", ws.Repos)
+	}
+	if ws.SelectedRepoID != ws.Repos[0].ID {
+		t.Fatalf("expected selected repo %q, got %q", ws.Repos[0].ID, ws.SelectedRepoID)
+	}
+	if ws.Repos[0].Path != "/tmp/web" {
+		t.Fatalf("expected first repo path %q, got %q", "/tmp/web", ws.Repos[0].Path)
+	}
+}
+
+func TestWorkspaceOverlayDraftCommitter_DuplicateWorkspaceNameReturnsWorkspaceAlreadyExists(t *testing.T) {
+	store := &runtimeMemoryStateStore{state: localWorkspaceStateForRuntime()}
+	committer := runtimeWorkspaceOverlayDraftCommitter{stateStore: store}
+
+	_, err := committer.CommitWorkspaceOverlayDraft(context.Background(), app.WorkspaceOverlayDraft{
+		Name: " team-a ",
+	})
+	if err == nil {
+		t.Fatal("expected duplicate workspace error")
+	}
+	if err.Error() != "workspace already exists" {
+		t.Fatalf("expected duplicate error %q, got %q", "workspace already exists", err.Error())
+	}
+
+	if got := store.state.SelectedWorkspaceID; got != "ws-team-a" {
+		t.Fatalf("expected selected workspace to remain %q, got %q", "ws-team-a", got)
+	}
+}
+
+func TestWorkspaceOverlayDraftCommitter_EmptyStagedReposSelectsWorkspaceOnly(t *testing.T) {
+	store := &runtimeMemoryStateStore{state: localWorkspaceStateForRuntime()}
+	committer := runtimeWorkspaceOverlayDraftCommitter{stateStore: store}
+
+	got, err := committer.CommitWorkspaceOverlayDraft(context.Background(), app.WorkspaceOverlayDraft{
+		Name: "empty",
+	})
+	if err != nil {
+		t.Fatalf("CommitWorkspaceOverlayDraft() error = %v", err)
+	}
+
+	ws, ok := runtimeWorkspaceByName(got, "empty")
+	if !ok {
+		t.Fatalf("expected workspace %q in %#v", "empty", got.Workspaces)
+	}
+	if got.SelectedWorkspaceID != ws.ID {
+		t.Fatalf("expected selected workspace %q, got %q", ws.ID, got.SelectedWorkspaceID)
+	}
+	if ws.SelectedRepoID != "" {
+		t.Fatalf("expected no selected repo, got %q", ws.SelectedRepoID)
+	}
+	if len(ws.Repos) != 0 {
+		t.Fatalf("expected empty repo list, got %#v", ws.Repos)
+	}
+}
+
 type fakeWorkspaceOverlayScanner struct {
 	candidates []app.RepoCandidate
 	err        error
@@ -225,4 +303,43 @@ func localWorkspaceStateForRuntime() workspace.State {
 			},
 		},
 	}
+}
+
+type runtimeMemoryStateStore struct {
+	state workspace.State
+}
+
+func (s *runtimeMemoryStateStore) Load(context.Context) (workspace.State, error) {
+	return cloneWorkspaceStateForRuntimeTests(s.state), nil
+}
+
+func (s *runtimeMemoryStateStore) Save(_ context.Context, state workspace.State) error {
+	s.state = cloneWorkspaceStateForRuntimeTests(state)
+	return nil
+}
+
+func cloneWorkspaceStateForRuntimeTests(state workspace.State) workspace.State {
+	cloned := state
+	cloned.Workspaces = make([]workspace.Workspace, len(state.Workspaces))
+	for i := range state.Workspaces {
+		ws := state.Workspaces[i]
+		ws.Repos = append([]workspace.Repo(nil), ws.Repos...)
+		cloned.Workspaces[i] = ws
+	}
+	if state.RepoStatusSnapshots != nil {
+		cloned.RepoStatusSnapshots = make(map[string]workspace.RepoStatusSnapshot, len(state.RepoStatusSnapshots))
+		for key, value := range state.RepoStatusSnapshots {
+			cloned.RepoStatusSnapshots[key] = value
+		}
+	}
+	return cloned
+}
+
+func runtimeWorkspaceByName(state workspace.State, name string) (workspace.Workspace, bool) {
+	for _, ws := range state.Workspaces {
+		if ws.Name == name {
+			return ws, true
+		}
+	}
+	return workspace.Workspace{}, false
 }
