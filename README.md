@@ -37,3 +37,17 @@ gh-workspace -w team-a
 - `enter` attempts invalid-path recovery for the current repo
 - `r` refreshes the selected repo status
 - `p` toggles auto polling
+
+8. Workspace overlay (`w`):
+- press `w` to open workspace overlay from either folder mode or workspace mode
+- switch mode shows workspace list only; press `c` to enter create mode
+- create mode includes:
+  - `name>` workspace name input
+  - `scan path>` input (immediate scan; no extra submit key)
+  - candidate list (left) where `enter` stages selected repo
+  - staged repo list (right)
+- press `s` in create mode (staged list focus) to save + close overlay + switch to new workspace
+- press `esc` to discard all draft state and close overlay
+- creating with zero staged repos is allowed
+- duplicate workspace name returns `workspace already exists`
+- staging the same repo twice returns `already added`

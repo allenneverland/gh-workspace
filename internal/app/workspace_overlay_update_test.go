@@ -420,6 +420,73 @@ func TestOverlay_Save_StaleCompletionMessageIgnored(t *testing.T) {
 	}
 }
 
+func TestOverlay_Save_CompletionFromPriorSessionIgnoredAfterEscAndResave(t *testing.T) {
+	committer := &fakeWorkspaceOverlayDraftCommitter{
+		state: workspace.State{
+			SelectedWorkspaceID: "ws-team-b",
+			Workspaces: []workspace.Workspace{
+				{ID: "ws-team-b", Name: "team-b"},
+			},
+		},
+	}
+	m := seededCreateOverlayModelForSaveTests(committer)
+	m.UIMode = ModeFolder
+	m.Overlay.Focus = OverlayFocusStagedRepoList
+	m.Overlay.CreateNameInput = "team-first"
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd == nil {
+		t.Fatal("expected first save key to dispatch a save command")
+	}
+
+	firstInFlight := updated.(Model)
+	if firstInFlight.Overlay.SaveRevision != 1 {
+		t.Fatalf("expected first save revision %d, got %d", 1, firstInFlight.Overlay.SaveRevision)
+	}
+
+	updated, _ = firstInFlight.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	closed := updated.(Model)
+	if closed.Overlay.Active {
+		t.Fatalf("expected esc to close overlay while first save in flight, got %#v", closed.Overlay)
+	}
+
+	updated, _ = closed.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	reopened := updated.(Model)
+	updated, _ = reopened.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	secondCreate := updated.(Model)
+	secondCreate.Overlay.Focus = OverlayFocusStagedRepoList
+	secondCreate.Overlay.CreateNameInput = "team-second"
+
+	updated, secondCmd := secondCreate.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if secondCmd == nil {
+		t.Fatal("expected second save key to dispatch a save command")
+	}
+
+	secondInFlight := updated.(Model)
+	if secondInFlight.Overlay.SaveRevision != 2 {
+		t.Fatalf("expected second save revision %d, got %d", 2, secondInFlight.Overlay.SaveRevision)
+	}
+
+	priorCompletion := MsgOverlaySaveCompleted{
+		Revision: 1,
+		State: workspace.State{
+			SelectedWorkspaceID: "ws-old",
+			Workspaces:          []workspace.Workspace{{ID: "ws-old", Name: "old"}},
+		},
+	}
+	updated, _ = secondInFlight.Update(priorCompletion)
+	got := updated.(Model)
+	if got.State.CurrentWorkspaceID() == "ws-old" {
+		t.Fatalf("expected prior-session save completion to be ignored, got %#v", got.State.Snapshot)
+	}
+	if !got.Overlay.Active || !got.Overlay.SaveInFlight {
+		t.Fatalf("expected second save to remain in flight after prior completion, got %#v", got.Overlay)
+	}
+	if got.UIMode != ModeFolder {
+		t.Fatalf("expected UI mode to remain %q while second save in flight, got %q", ModeFolder, got.UIMode)
+	}
+}
+
 func seededCreateOverlayModelForSaveTests(committer WorkspaceOverlayDraftCommitter) Model {
 	m := NewModel(Config{
 		InitialUIMode:                  ModeWorkspace,

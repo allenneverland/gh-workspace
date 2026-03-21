@@ -80,6 +80,7 @@ Behavior notes:
 - `a`: add repo path
 - `enter`: attempt invalid-path recovery for the current repo
 - `x`: remove selected repo
+- `w`: open workspace overlay (switch/create)
 - `]`: next workspace (workspace mode only)
 - `[`: previous workspace (workspace mode only)
 - `r`: refresh selected repo now
@@ -90,3 +91,18 @@ Folder mode specifics:
 - workspace list is hidden in the left pane
 - `[` and `]` are disabled
 - `a` opens repo-path input (`enter` submit, `esc` cancel)
+
+## Workspace Overlay Flow (v1)
+
+- `w` opens switch mode; this view shows only workspace list and no create inputs.
+- `c` enters create mode.
+- Create mode has:
+  - `name>` workspace name input
+  - `scan path>` input with immediate scan updates
+  - candidate list (`enter` stages selected repo)
+  - staged repo list
+- `s` in create mode saves, closes the overlay, and switches to the new workspace.
+- `esc` discards all draft state and closes the overlay.
+- Creating a workspace with no staged repos is valid.
+- Duplicate workspace name save returns `workspace already exists`.
+- Staging a duplicate repo path returns `already added`.

@@ -11,6 +11,7 @@ import (
 
 func renderView(m Model) string {
 	shouldTrim := m.WindowWidth > 0
+	var baseView string
 	if m.WindowWidth > 0 && m.WindowWidth < 100 {
 		stackedHeights := splitHeights(m.WindowHeight, 3)
 		width := m.WindowWidth
@@ -36,28 +37,33 @@ func renderView(m Model) string {
 			stackedHeights[2],
 			shouldTrim,
 		)
-		return lipgloss.JoinVertical(lipgloss.Left, left, center, right)
+		baseView = lipgloss.JoinVertical(lipgloss.Left, left, center, right)
+	} else {
+		left := renderPane(
+			m.renderLeftPane(),
+			m.LeftPaneWidth,
+			m.WindowHeight,
+			shouldTrim,
+		)
+		center := renderPane(
+			m.renderCenterPane(),
+			m.CenterPaneWidth,
+			m.WindowHeight,
+			shouldTrim,
+		)
+		right := renderPane(
+			m.renderRightPane(),
+			m.RightPaneWidth,
+			m.WindowHeight,
+			shouldTrim,
+		)
+		baseView = lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
 	}
 
-	left := renderPane(
-		m.renderLeftPane(),
-		m.LeftPaneWidth,
-		m.WindowHeight,
-		shouldTrim,
-	)
-	center := renderPane(
-		m.renderCenterPane(),
-		m.CenterPaneWidth,
-		m.WindowHeight,
-		shouldTrim,
-	)
-	right := renderPane(
-		m.renderRightPane(),
-		m.RightPaneWidth,
-		m.WindowHeight,
-		shouldTrim,
-	)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
+	if m.Overlay.Active {
+		return renderWorkspaceOverlayLayer(baseView, m)
+	}
+	return baseView
 }
 
 func (m Model) renderCenterTabs() string {

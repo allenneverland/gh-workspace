@@ -429,7 +429,7 @@ func beginWorkspaceOverlaySave(m Model) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
-	revision := m.Overlay.SaveRevision + 1
+	revision := m.overlaySaveRequestCounter + 1
 	cmd := m.workspaceOverlaySaveCommand(revision, WorkspaceOverlayDraft{
 		Name:        m.Overlay.CreateNameInput,
 		StagedRepos: append([]RepoCandidate(nil), m.Overlay.StagedRepos...),
@@ -439,6 +439,7 @@ func beginWorkspaceOverlaySave(m Model) (Model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
+	m.overlaySaveRequestCounter = revision
 	m.Overlay.SaveInFlight = true
 	m.Overlay.SaveRevision = revision
 	m.Overlay.LastError = ""

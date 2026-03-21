@@ -417,6 +417,7 @@ type Model struct {
 	diffRenderRequestID            int
 	diffRenderInFlight             bool
 	diffRenderPending              bool
+	overlaySaveRequestCounter      int
 	syncCommandInFlight            bool
 	syncRefreshPending             bool
 	syncTickPending                bool
