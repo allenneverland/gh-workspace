@@ -25,8 +25,8 @@ func DiscoverRepoRoots(ctx context.Context, rootPath string) ([]string, error) {
 
 	root, err := canonicalDiscoverPath(trimmedRoot)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("discover repo roots under %q: %w", trimmedRoot, err)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return nil, discoverRootError(trimmedRoot, err)
 		}
 		return nil, err
 	}
@@ -40,6 +40,9 @@ func DiscoverRepoRoots(ctx context.Context, rootPath string) ([]string, error) {
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, fs.ErrPermission) {
+				if path == root {
+					return discoverRootError(trimmedRoot, walkErr)
+				}
 				if d != nil && d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -57,6 +60,9 @@ func DiscoverRepoRoots(ctx context.Context, rootPath string) ([]string, error) {
 		hasGit, err := hasGitMetadata(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) {
+				if path == root {
+					return discoverRootError(trimmedRoot, err)
+				}
 				return filepath.SkipDir
 			}
 			return err
@@ -123,4 +129,8 @@ func canonicalDiscoverPath(path string) (string, error) {
 		return filepath.Clean(abs), nil
 	}
 	return filepath.Clean(resolved), nil
+}
+
+func discoverRootError(rootPath string, err error) error {
+	return fmt.Errorf("discover repo roots under %q: %w", rootPath, err)
 }

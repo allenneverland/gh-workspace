@@ -98,6 +98,34 @@ func TestComposeRuntimeModel_WiresWorkspaceOverlayScannerAndDefaultScanPath(t *t
 	}
 }
 
+func TestComposeRuntimeModel_GetwdFailureFallsBackAndStillSucceeds(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv(envTestMode, "0")
+	t.Setenv(envStatePath, statePath)
+	seedRuntimeState(t, statePath, localWorkspaceStateForRuntime())
+
+	previousGetwd := runtimeGetwd
+	runtimeGetwd = func() (string, error) {
+		return "", errors.New("getwd sentinel")
+	}
+	t.Cleanup(func() {
+		runtimeGetwd = previousGetwd
+	})
+
+	model, closeFn, err := composeRuntimeModel(context.Background(), LaunchOptions{Mode: LaunchWorkspace, WorkspaceName: "team-a"})
+	if err != nil {
+		t.Fatalf("composeRuntimeModel() error = %v", err)
+	}
+	if closeFn == nil {
+		t.Fatal("expected close function")
+	}
+	defer func() { _ = closeFn() }()
+
+	if got := model.DefaultOverlayScanPath; got != "" {
+		t.Fatalf("expected empty runtime default overlay scan path, got %q", got)
+	}
+}
+
 func TestWorkspaceOverlayScanner_ModelUpdate_UsesScannerResult(t *testing.T) {
 	wantCandidates := []app.RepoCandidate{{Name: "api", Path: "/tmp/api"}}
 	m := app.NewModel(app.Config{

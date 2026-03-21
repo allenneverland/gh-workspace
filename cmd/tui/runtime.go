@@ -24,14 +24,16 @@ const (
 
 var ErrWorkspaceNotFound = errors.New("workspace not found")
 
+var runtimeGetwd = os.Getwd
+
 func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, func() error, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	initialMode := uiModeForLaunchMode(opts.Mode)
-	defaultOverlayScanPath, err := os.Getwd()
+	defaultOverlayScanPath, err := runtimeGetwd()
 	if err != nil {
-		return app.Model{}, nil, err
+		defaultOverlayScanPath = ""
 	}
 	if isTestMode() {
 		model := app.NewModel(app.Config{

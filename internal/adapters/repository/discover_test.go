@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -84,6 +85,54 @@ func TestDiscoverRepoRoots(t *testing.T) {
 		}
 
 		assertSamePaths(t, got, canonicalPaths(t, []string{repo}))
+	})
+
+	t.Run("root permission denied returns clear error", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("permission denied behavior is not portable on windows")
+		}
+
+		parent := t.TempDir()
+		root := filepath.Join(parent, "private-root")
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", root, err)
+		}
+		if err := os.Chmod(root, 0); err != nil {
+			t.Fatalf("Chmod(%q) error = %v", root, err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(root, 0o700)
+		})
+
+		got, err := DiscoverRepoRoots(context.Background(), root)
+		if err == nil {
+			t.Fatal("DiscoverRepoRoots() error = nil, want permission denied error")
+		}
+		if !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("DiscoverRepoRoots() error = %v, want os.ErrPermission", err)
+		}
+		if !strings.Contains(err.Error(), root) {
+			t.Fatalf("DiscoverRepoRoots() error = %q, want path %q in message", err.Error(), root)
+		}
+		if got != nil {
+			t.Fatalf("DiscoverRepoRoots() = %#v, want nil", got)
+		}
+	})
+
+	t.Run("canceled context returns cancellation error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		got, err := DiscoverRepoRoots(ctx, t.TempDir())
+		if err == nil {
+			t.Fatal("DiscoverRepoRoots() error = nil, want context cancellation error")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DiscoverRepoRoots() error = %v, want context.Canceled", err)
+		}
+		if got != nil {
+			t.Fatalf("DiscoverRepoRoots() = %#v, want nil", got)
+		}
 	})
 }
 
