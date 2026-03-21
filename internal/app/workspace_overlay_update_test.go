@@ -81,3 +81,70 @@ func TestOverlay_KeyEsc_FromCreateMode_DiscardsDraftFields(t *testing.T) {
 		t.Fatalf("expected staged repo draft to be cleared, got %#v", got.Overlay.StagedRepos)
 	}
 }
+
+func TestOverlay_RepoPathInputActive_KeyW_TypesInputWithoutOpeningOverlay(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+
+	step, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	active := step.(Model)
+	updated, cmd := active.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected no command while typing in repo path input")
+	}
+	if got.RepoPathInput.Value() != "w" {
+		t.Fatalf("expected repo path input to capture %q, got %q", "w", got.RepoPathInput.Value())
+	}
+	if got.Overlay.Active {
+		t.Fatalf("expected overlay to remain closed, got %#v", got.Overlay)
+	}
+}
+
+func TestOverlay_RepoPathInputActive_KeyQ_TypesInputWithoutQuitting(t *testing.T) {
+	m := seededFolderModeModelWithLocalRepo()
+
+	step, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	active := step.(Model)
+	updated, cmd := active.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected no command while typing in repo path input")
+	}
+	if got.RepoPathInput.Value() != "q" {
+		t.Fatalf("expected repo path input to capture %q, got %q", "q", got.RepoPathInput.Value())
+	}
+	if got.Overlay.Active {
+		t.Fatalf("expected overlay to remain closed, got %#v", got.Overlay)
+	}
+}
+
+func TestOverlay_LazygitActive_KeyW_ForwardsToPTYInsteadOfOpeningOverlay(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	lazygitModel := enteredTab.(Model)
+
+	updated, cmd := lazygitModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := updated.(Model)
+
+	if cmd != nil {
+		t.Fatal("expected no command for lazygit-owned key")
+	}
+	if got.Overlay.Active {
+		t.Fatalf("expected overlay to remain closed while lazygit owns keys, got %#v", got.Overlay)
+	}
+	if len(manager.writeCalls) != 1 {
+		t.Fatalf("expected one PTY write for lazygit-owned key, got %d", len(manager.writeCalls))
+	}
+	if payload := string(manager.writeCalls[0].data); payload != "w" {
+		t.Fatalf("expected forwarded payload %q, got %q", "w", payload)
+	}
+}
