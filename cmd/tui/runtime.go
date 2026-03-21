@@ -29,10 +29,16 @@ func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, fu
 		ctx = context.Background()
 	}
 	initialMode := uiModeForLaunchMode(opts.Mode)
+	defaultOverlayScanPath, err := os.Getwd()
+	if err != nil {
+		return app.Model{}, nil, err
+	}
 	if isTestMode() {
 		model := app.NewModel(app.Config{
-			InitialUIMode: initialMode,
-			SyncEngine:    syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{}),
+			InitialUIMode:           initialMode,
+			SyncEngine:              syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{}),
+			WorkspaceOverlayScanner: runtimeWorkspaceOverlayScanner{},
+			DefaultOverlayScanPath:  defaultOverlayScanPath,
 		})
 		return model, nil, nil
 	}
@@ -68,12 +74,14 @@ func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, fu
 	engine := syncengine.NewEngine(selectedRepoFetcher)
 
 	model := app.NewModel(app.Config{
-		InitialState:       loadedState,
-		InitialUIMode:      initialMode,
-		SyncEngine:         engine,
-		StateStore:         stateStore,
-		SyncStatePublisher: selectedRepoFetcher,
-		RepoPathSubmitter:  runtimeRepoPathSubmitter{stateStore: stateStore},
+		InitialState:            loadedState,
+		InitialUIMode:           initialMode,
+		SyncEngine:              engine,
+		StateStore:              stateStore,
+		SyncStatePublisher:      selectedRepoFetcher,
+		RepoPathSubmitter:       runtimeRepoPathSubmitter{stateStore: stateStore},
+		WorkspaceOverlayScanner: runtimeWorkspaceOverlayScanner{},
+		DefaultOverlayScanPath:  defaultOverlayScanPath,
 	})
 	if strings.TrimSpace(statusMessage) != "" {
 		model.StatusMessage = statusMessage
