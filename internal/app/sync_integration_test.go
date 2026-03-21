@@ -133,6 +133,12 @@ func TestSync_ManualRefresh_UpdatesRightPaneSnapshot(t *testing.T) {
 		PR:      workspace.StatusSuccess,
 		CI:      workspace.StatusFailure,
 		Release: workspace.StatusInProgress,
+		ReleaseRun: workspace.ReleaseRun{
+			Name:      "publish v1.2.3",
+			Event:     "release",
+			URL:       "https://github.com/acme/svc/actions/runs/99",
+			UpdatedAt: time.Date(2026, time.March, 21, 8, 15, 0, 0, time.UTC),
+		},
 	}
 	m.SyncEngine = engine
 
@@ -157,6 +163,18 @@ func TestSync_ManualRefresh_UpdatesRightPaneSnapshot(t *testing.T) {
 	if snapshot.Release != workspace.StatusInProgress {
 		t.Fatalf("expected Release status %q, got %q", workspace.StatusInProgress, snapshot.Release)
 	}
+	if snapshot.ReleaseRun.Name != "publish v1.2.3" {
+		t.Fatalf("expected release run name %q, got %q", "publish v1.2.3", snapshot.ReleaseRun.Name)
+	}
+	if snapshot.ReleaseRun.Event != "release" {
+		t.Fatalf("expected release run event %q, got %q", "release", snapshot.ReleaseRun.Event)
+	}
+	if snapshot.ReleaseRun.URL != "https://github.com/acme/svc/actions/runs/99" {
+		t.Fatalf("expected release run url %q, got %q", "https://github.com/acme/svc/actions/runs/99", snapshot.ReleaseRun.URL)
+	}
+	if snapshot.ReleaseRun.UpdatedAt.IsZero() {
+		t.Fatal("expected release run updated timestamp to be set")
+	}
 	if snapshot.LastSyncedAt.IsZero() {
 		t.Fatal("expected LastSyncedAt to be set after refresh completion")
 	}
@@ -169,6 +187,7 @@ func TestSync_ManualRefresh_UpdatesRightPaneSnapshot(t *testing.T) {
 	assertContains(t, final.View(), "pr: success")
 	assertContains(t, final.View(), "ci: failure")
 	assertContains(t, final.View(), "release: in_progress")
+	assertContains(t, final.View(), "publishRun: publish v1.2.3")
 }
 
 func TestSync_KeyToggleAutoPolling_TogglesEngineState(t *testing.T) {

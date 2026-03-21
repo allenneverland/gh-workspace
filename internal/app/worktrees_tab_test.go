@@ -175,8 +175,11 @@ func TestView_RendersWorktreesSectionAndSelection(t *testing.T) {
 
 	assertContains(t, got, "Worktrees")
 	assertContains(t, got, "wt-feature-a")
-	assertContains(t, got, "selected worktree: ../api-feature-a")
-	assertContains(t, got, "worktree actions: create/switch")
+	assertContains(t, got, "selected worktree:")
+	assertContains(t, got, "../api-")
+	assertContains(t, got, "feature-a")
+	assertContains(t, got, "worktree actions:")
+	assertContains(t, got, "create/switch")
 }
 
 type fakeWorktreeAdapter struct {

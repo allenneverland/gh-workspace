@@ -67,9 +67,10 @@ func TestView_FolderMode_EmptyState_ShowsGuidance(t *testing.T) {
 	m := NewModel(Config{InitialUIMode: ModeFolder})
 
 	got := m.View()
-	assertContains(t, got, "current folder is not a git repo")
+	assertContains(t, got, "current folder is")
+	assertContains(t, got, "not a git repo")
 	assertContains(t, got, "press a to add repo path")
-	assertContains(t, got, "-w <name>")
+	assertContains(t, got, "w <name>")
 }
 
 func TestView_FolderMode_RepoPathInput_ShowsPrompt(t *testing.T) {

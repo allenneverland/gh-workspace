@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -119,6 +120,31 @@ func TestUpdate_KeyMsg_LazygitTab_WithSession_PrioritizesPTYOverAppBindings(t *t
 	}
 }
 
+func TestUpdate_KeyMsg_LazygitTab_QuitBypassesPTYForwarding(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	tabModel := enteredTab.(Model)
+
+	updated, cmd := tabModel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected quit message type %T, got %T", tea.QuitMsg{}, cmd())
+	}
+	if len(manager.writeCalls) != 0 {
+		t.Fatalf("expected no PTY writes for global quit, got %d", len(manager.writeCalls))
+	}
+}
+
 func TestUpdate_LazygitTab_DoesNotAccumulateFrameListeners(t *testing.T) {
 	m := seededModelWithRepos()
 	manager := newFakeLazygitSessionManager()
@@ -178,6 +204,22 @@ func TestUpdate_LazygitTab_StartFailure_ClearsSessionState(t *testing.T) {
 	}
 	if final.StatusMessage == "" {
 		t.Fatal("expected status message after failed lazygit start")
+	}
+}
+
+func TestView_LazygitTab_StartFailure_ShowsErrorInsteadOfStartupHint(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.startErrByRepo["/tmp/api"] = errors.New("boom")
+	m.LazygitSessionManager = manager
+
+	updated, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	got := updated.(Model)
+
+	view := got.View()
+	assertContains(t, view, "failed to start lazygit session: boom")
+	if strings.Contains(view, "Lazygit 啟動中...") {
+		t.Fatalf("expected startup hint to be suppressed on start failure, got:\n%s", view)
 	}
 }
 
@@ -258,9 +300,113 @@ func TestUpdate_LazygitFrameMessage_RendersInView(t *testing.T) {
 	assertContains(t, frameModel.View(), "frame-one")
 }
 
+func TestUpdate_LazygitFrameMessage_ReplacesPreviousSnapshot(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	tabModel := enteredTab.(Model)
+
+	afterFirst, _ := tabModel.Update(MsgLazygitFrame{
+		SessionID: "session-api",
+		Data:      []byte("first-frame"),
+	})
+	afterSecond, _ := afterFirst.(Model).Update(MsgLazygitFrame{
+		SessionID: "session-api",
+		Data:      []byte("second-frame"),
+	})
+	got := afterSecond.(Model)
+
+	if got.LazygitCenterFrameText != "second-frame" {
+		t.Fatalf("expected latest frame snapshot %q, got %q", "second-frame", got.LazygitCenterFrameText)
+	}
+}
+
+func TestUpdate_LazygitTab_AppliesCenterViewportResizeOnEnter(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	sized, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	enteredTab, _ := sized.(Model).Update(MsgSetActiveTab{Tab: TabLazygit})
+	_ = enteredTab.(Model)
+
+	if len(manager.resizeCalls) == 0 {
+		t.Fatal("expected lazygit session resize call when entering lazygit tab")
+	}
+	last := manager.resizeCalls[len(manager.resizeCalls)-1]
+	if last.sessionID != "session-api" {
+		t.Fatalf("expected resize target session %q, got %q", "session-api", last.sessionID)
+	}
+	if last.cols != 67 || last.rows != 35 {
+		t.Fatalf("expected center viewport resize cols=67 rows=35, got cols=%d rows=%d", last.cols, last.rows)
+	}
+}
+
+func TestUpdate_LazygitTab_WindowResize_UpdatesSessionViewport(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	tabModel := enteredTab.(Model)
+
+	updated, _ := tabModel.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	_ = updated.(Model)
+
+	if len(manager.resizeCalls) == 0 {
+		t.Fatal("expected lazygit session resize call on window resize")
+	}
+	last := manager.resizeCalls[len(manager.resizeCalls)-1]
+	if last.sessionID != "session-api" {
+		t.Fatalf("expected resize target session %q, got %q", "session-api", last.sessionID)
+	}
+	if last.cols != 57 || last.rows != 27 {
+		t.Fatalf("expected center viewport resize cols=57 rows=27, got cols=%d rows=%d", last.cols, last.rows)
+	}
+}
+
+func TestUpdate_LazygitFrameMessage_UsesSnapshotPayloadAsIs(t *testing.T) {
+	m := seededModelWithRepos()
+	manager := newFakeLazygitSessionManager()
+	manager.sessionsByRepo["/tmp/api"] = LazygitSessionHandle{
+		ID:       "session-api",
+		RepoPath: "/tmp/api",
+	}
+	m.LazygitSessionManager = manager
+
+	enteredTab, _ := m.Update(MsgSetActiveTab{Tab: TabLazygit})
+	tabModel := enteredTab.(Model)
+
+	raw := []byte("\x1b[2J\x1b[Hfoo\rbar\x00\x1b[31mred\x1b[0m")
+	updated, _ := tabModel.Update(MsgLazygitFrame{
+		SessionID: "session-api",
+		Data:      raw,
+	})
+	got := updated.(Model)
+
+	if got.LazygitCenterFrameText != string(raw) {
+		t.Fatalf("expected lazygit frame snapshot payload to be preserved, got %q", got.LazygitCenterFrameText)
+	}
+}
+
 type fakeLazygitSessionManager struct {
-	startCalls []string
-	writeCalls []lazygitWriteCall
+	startCalls  []string
+	writeCalls  []lazygitWriteCall
+	resizeCalls []lazygitResizeCall
 
 	startErrByRepo map[string]error
 	sessionsByRepo map[string]LazygitSessionHandle
@@ -271,6 +417,12 @@ type fakeLazygitSessionManager struct {
 type lazygitWriteCall struct {
 	sessionID string
 	data      []byte
+}
+
+type lazygitResizeCall struct {
+	sessionID string
+	cols      int
+	rows      int
 }
 
 func newFakeLazygitSessionManager() *fakeLazygitSessionManager {
@@ -303,6 +455,15 @@ func (f *fakeLazygitSessionManager) WriteInput(sessionID string, input []byte) e
 	f.writeCalls = append(f.writeCalls, lazygitWriteCall{
 		sessionID: sessionID,
 		data:      buf,
+	})
+	return nil
+}
+
+func (f *fakeLazygitSessionManager) ResizeSession(sessionID string, cols, rows int) error {
+	f.resizeCalls = append(f.resizeCalls, lazygitResizeCall{
+		sessionID: sessionID,
+		cols:      cols,
+		rows:      rows,
 	})
 	return nil
 }

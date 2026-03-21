@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
 )
@@ -35,33 +36,39 @@ func (a *Adapter) FetchRepoStatus(ctx context.Context, repo workspace.Repo) (wor
 	if strings.TrimSpace(repo.Name) == "" {
 		return workspace.RepoStatus{}, fmt.Errorf("repo name is required")
 	}
+	repoSlug, err := a.resolveRepoSlug(ctx, repo)
+	if err != nil {
+		return workspace.RepoStatus{}, err
+	}
 
 	if err := a.CheckAuth(ctx); err != nil {
 		return workspace.RepoStatus{}, err
 	}
 
-	prStatus, err := a.fetchPullRequestStatus(ctx, repo)
+	prStatus, err := a.fetchPullRequestStatus(ctx, repoSlug, repo.DefaultBranch)
 	if err != nil {
 		return workspace.RepoStatus{}, err
 	}
 
-	ciStatus, err := a.fetchLatestWorkflowStatus(ctx, repo.Name, "", repo.DefaultBranch)
+	ciStatus, err := a.fetchLatestWorkflowStatus(ctx, repoSlug, "", repo.DefaultBranch)
 	if err != nil {
 		return workspace.RepoStatus{}, err
 	}
 
 	releaseStatus := workspace.StatusUnconfigured
+	releaseRun := workspace.ReleaseRun{}
 	if strings.TrimSpace(repo.ReleaseWorkflowRef) != "" {
-		releaseStatus, err = a.fetchLatestWorkflowStatus(ctx, repo.Name, repo.ReleaseWorkflowRef, repo.DefaultBranch)
+		releaseStatus, releaseRun, err = a.fetchReleaseWorkflowStatus(ctx, repoSlug, repo.ReleaseWorkflowRef, repo.DefaultBranch)
 		if err != nil {
 			return workspace.RepoStatus{}, err
 		}
 	}
 
 	return workspace.RepoStatus{
-		PR:      prStatus,
-		CI:      ciStatus,
-		Release: releaseStatus,
+		PR:         prStatus,
+		CI:         ciStatus,
+		Release:    releaseStatus,
+		ReleaseRun: releaseRun,
 	}, nil
 }
 
@@ -69,14 +76,14 @@ type pullRequest struct {
 	State string `json:"state"`
 }
 
-func (a *Adapter) fetchPullRequestStatus(ctx context.Context, repo workspace.Repo) (workspace.Status, error) {
+func (a *Adapter) fetchPullRequestStatus(ctx context.Context, repoSlug, defaultBranch string) (workspace.Status, error) {
 	args := []string{
 		"pr", "list",
-		"--repo", repo.Name,
+		"--repo", repoSlug,
 		"--state", "open",
 	}
-	if strings.TrimSpace(repo.DefaultBranch) != "" {
-		args = append(args, "--base", repo.DefaultBranch)
+	if strings.TrimSpace(defaultBranch) != "" {
+		args = append(args, "--base", defaultBranch)
 	}
 	args = append(args, "--limit", "1", "--json", "state")
 
@@ -102,32 +109,127 @@ func (a *Adapter) fetchPullRequestStatus(ctx context.Context, repo workspace.Rep
 	}
 }
 
+func (a *Adapter) resolveRepoSlug(ctx context.Context, repo workspace.Repo) (string, error) {
+	name := strings.TrimSpace(repo.Name)
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+
+	path := strings.TrimSpace(repo.Path)
+	if path == "" {
+		return "", fmt.Errorf("repo %q must be in OWNER/REPO format or include repo path", name)
+	}
+
+	out, err := a.runner.Run(ctx, "git", "-C", path, "remote", "get-url", "origin")
+	if err != nil {
+		output := strings.TrimSpace(string(out))
+		if output == "" {
+			return "", fmt.Errorf("git remote get-url origin failed for %q: %w", path, err)
+		}
+		return "", fmt.Errorf("git remote get-url origin failed for %q: %w: %s", path, err, output)
+	}
+
+	slug, ok := repoSlugFromGitRemoteURL(string(out))
+	if !ok {
+		return "", fmt.Errorf("could not parse OWNER/REPO from origin remote url %q", strings.TrimSpace(string(out)))
+	}
+	return slug, nil
+}
+
+func repoSlugFromGitRemoteURL(raw string) (string, bool) {
+	remote := strings.TrimSpace(raw)
+	if remote == "" {
+		return "", false
+	}
+	remote = strings.TrimSuffix(remote, ".git")
+
+	path := remote
+	if strings.Contains(remote, "://") {
+		parsed, err := url.Parse(remote)
+		if err != nil {
+			return "", false
+		}
+		path = parsed.Path
+	} else if idx := strings.Index(remote, ":"); idx >= 0 {
+		path = remote[idx+1:]
+	}
+
+	path = strings.Trim(path, "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		return "", false
+	}
+	owner := strings.TrimSpace(parts[0])
+	repo := strings.TrimSpace(parts[1])
+	if owner == "" || repo == "" {
+		return "", false
+	}
+	return owner + "/" + repo, true
+}
+
 type workflowRunsResponse struct {
 	WorkflowRuns []workflowRun `json:"workflow_runs"`
 }
 
 type workflowRun struct {
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
+	Status       string `json:"status"`
+	Conclusion   string `json:"conclusion"`
+	DisplayTitle string `json:"display_title"`
+	Event        string `json:"event"`
+	HTMLURL      string `json:"html_url"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 func (a *Adapter) fetchLatestWorkflowStatus(ctx context.Context, repoName, workflowRef, branch string) (workspace.Status, error) {
+	status, _, found, err := a.fetchLatestWorkflowStatusRun(ctx, repoName, workflowRef, branch)
+	if err != nil {
+		return workspace.StatusNeutral, err
+	}
+	if !found {
+		return workspace.StatusNeutral, nil
+	}
+	return status, nil
+}
+
+func (a *Adapter) fetchReleaseWorkflowStatus(ctx context.Context, repoName, workflowRef, branch string) (workspace.Status, workspace.ReleaseRun, error) {
+	status, run, found, err := a.fetchLatestWorkflowStatusRun(ctx, repoName, workflowRef, branch)
+	if err != nil {
+		return workspace.StatusNeutral, workspace.ReleaseRun{}, err
+	}
+	if found {
+		return status, releaseRunFromWorkflowRun(run), nil
+	}
+	if strings.TrimSpace(branch) == "" {
+		return workspace.StatusNeutral, workspace.ReleaseRun{}, nil
+	}
+
+	status, run, found, err = a.fetchLatestWorkflowStatusRun(ctx, repoName, workflowRef, "")
+	if err != nil {
+		return workspace.StatusNeutral, workspace.ReleaseRun{}, err
+	}
+	if !found {
+		return workspace.StatusNeutral, workspace.ReleaseRun{}, nil
+	}
+	return status, releaseRunFromWorkflowRun(run), nil
+}
+
+func (a *Adapter) fetchLatestWorkflowStatusRun(ctx context.Context, repoName, workflowRef, branch string) (workspace.Status, workflowRun, bool, error) {
 	endpoint := workflowRunsEndpoint(repoName, workflowRef, branch)
 	out, err := a.runGH(ctx, "api", endpoint)
 	if err != nil {
-		return workspace.StatusNeutral, err
+		return workspace.StatusNeutral, workflowRun{}, false, err
 	}
 
 	var runs workflowRunsResponse
 	if err := json.Unmarshal(out, &runs); err != nil {
-		return workspace.StatusNeutral, fmt.Errorf("parse gh workflow runs output for endpoint %q: %w (raw=%q)", endpoint, err, safeSnippet(out))
+		return workspace.StatusNeutral, workflowRun{}, false, fmt.Errorf("parse gh workflow runs output for endpoint %q: %w (raw=%q)", endpoint, err, safeSnippet(out))
 	}
 	if len(runs.WorkflowRuns) == 0 {
-		return workspace.StatusNeutral, nil
+		return workspace.StatusNeutral, workflowRun{}, false, nil
 	}
 
 	latest := runs.WorkflowRuns[0]
-	return workspace.StatusFromGitHubRun(latest.Status, latest.Conclusion), nil
+	return workspace.StatusFromGitHubRun(latest.Status, latest.Conclusion), latest, true, nil
 }
 
 func workflowRunsEndpoint(repoName, workflowRef, branch string) string {
@@ -165,6 +267,27 @@ func safeSnippet(raw []byte) string {
 		return snippet
 	}
 	return snippet[:limit] + "..."
+}
+
+func releaseRunFromWorkflowRun(run workflowRun) workspace.ReleaseRun {
+	return workspace.ReleaseRun{
+		Name:      strings.TrimSpace(run.DisplayTitle),
+		Event:     strings.TrimSpace(run.Event),
+		URL:       strings.TrimSpace(run.HTMLURL),
+		UpdatedAt: parseGitHubTimestamp(run.UpdatedAt),
+	}
+}
+
+func parseGitHubTimestamp(raw string) time.Time {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return time.Time{}
+	}
+	ts, err := time.Parse(time.RFC3339, text)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
 }
 
 type commandRunner struct{}

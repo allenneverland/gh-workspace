@@ -61,6 +61,7 @@ type LazygitFrame = lazygitadapter.Frame
 type LazygitSessionManager interface {
 	StartSession(repoPath string) (LazygitSessionHandle, error)
 	WriteInput(sessionID string, input []byte) error
+	ResizeSession(sessionID string, cols, rows int) error
 	Frames() <-chan LazygitFrame
 }
 
@@ -369,6 +370,8 @@ type Model struct {
 	LeftPaneWidth                int
 	CenterPaneWidth              int
 	RightPaneWidth               int
+	WindowWidth                  int
+	WindowHeight                 int
 	State                        WorkspaceState
 	Keys                         KeyMap
 	AddRepoRequested             bool
@@ -498,9 +501,10 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	hasReleaseWorkflow := strings.TrimSpace(repo.ReleaseWorkflowRef) != ""
 
 	snapshot := RepoStatusSnapshot{
-		PR:      workspace.StatusNeutral,
-		CI:      workspace.StatusNeutral,
-		Release: workspace.StatusNeutral,
+		PR:         workspace.StatusNeutral,
+		CI:         workspace.StatusNeutral,
+		Release:    workspace.StatusNeutral,
+		ReleaseRun: workspace.ReleaseRun{},
 	}
 
 	key := repoStatusSnapshotKey(m.State.CurrentWorkspaceID(), repo.ID)
@@ -521,11 +525,13 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	if stored.Release != "" {
 		snapshot.Release = stored.Release
 	}
+	snapshot.ReleaseRun = stored.ReleaseRun
 	snapshot.LastSyncedAt = stored.LastSyncedAt
 	snapshot.IsStale = stored.IsStale
 	snapshot.LatestError = stored.LatestError
 	if !hasReleaseWorkflow {
 		snapshot.Release = workspace.StatusUnconfigured
+		snapshot.ReleaseRun = workspace.ReleaseRun{}
 	}
 	return snapshot
 }

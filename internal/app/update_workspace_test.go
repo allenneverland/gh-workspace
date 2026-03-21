@@ -371,6 +371,68 @@ func TestUpdate_WorkspaceMode_SelectSystemWorkspaceAutoSelectsFirstUser(t *testi
 	}
 }
 
+func TestUpdate_KeyQuit_OutsideLazygit_RequestsAppQuit(t *testing.T) {
+	m := seededModelWithRepos()
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected quit message type %T, got %T", tea.QuitMsg{}, cmd())
+	}
+}
+
+func TestUpdate_KeyTab_CyclesCenterTabsForwardAndBackward(t *testing.T) {
+	m := seededModelWithRepos()
+
+	forwardUpdated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	forward := forwardUpdated.(Model)
+	if forward.ActiveTab != TabWorktrees {
+		t.Fatalf("expected active tab %q after tab, got %q", TabWorktrees, forward.ActiveTab)
+	}
+
+	backwardUpdated, _ := forward.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	backward := backwardUpdated.(Model)
+	if backward.ActiveTab != TabOverview {
+		t.Fatalf("expected active tab %q after shift+tab, got %q", TabOverview, backward.ActiveTab)
+	}
+}
+
+func TestUpdate_KeyNumber_SelectsCenterTabDirectly(t *testing.T) {
+	m := seededModelWithRepos()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	got := updated.(Model)
+	if got.ActiveTab != TabWorktrees {
+		t.Fatalf("expected active tab %q after key 2, got %q", TabWorktrees, got.ActiveTab)
+	}
+}
+
+func TestUpdate_WindowSizeMsg_AdjustsPaneWidths(t *testing.T) {
+	m := seededModelWithRepos()
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	got := updated.(Model)
+
+	if got.WindowWidth != 120 || got.WindowHeight != 32 {
+		t.Fatalf("expected window size 120x32, got %dx%d", got.WindowWidth, got.WindowHeight)
+	}
+	if got.LeftPaneWidth+got.CenterPaneWidth+got.RightPaneWidth != 120 {
+		t.Fatalf(
+			"expected pane widths to sum to %d, got left=%d center=%d right=%d",
+			120,
+			got.LeftPaneWidth,
+			got.CenterPaneWidth,
+			got.RightPaneWidth,
+		)
+	}
+	if got.CenterPaneWidth < 1 {
+		t.Fatalf("expected positive center width, got %d", got.CenterPaneWidth)
+	}
+}
+
 func TestNewModel_WorkspaceMode_WithOnlySystemWorkspace_LeavesSelectionEmpty(t *testing.T) {
 	m := NewModel(Config{
 		InitialUIMode: ModeWorkspace,

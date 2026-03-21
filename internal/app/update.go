@@ -30,6 +30,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			next = ensureLazygitSession(next)
+			next = resizeLazygitViewport(next)
 			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
 			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
@@ -45,6 +46,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			next = ensureLazygitSession(next)
+			next = resizeLazygitViewport(next)
 			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
 			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
@@ -69,6 +71,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
+			m = resizeLazygitViewport(m)
 			return scheduleLazygitFrameWait(m)
 		}
 		if m.ActiveTab == TabDiff {
@@ -113,7 +116,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case MsgLazygitFrame:
 		m.lazygitFrameListenerInFlight = false
 		if msg.SessionID == m.LazygitSessionID {
-			m.LazygitCenterFrameText += string(msg.Data)
+			m.LazygitCenterFrameText = string(msg.Data)
 		}
 		return scheduleLazygitFrameWait(m)
 	case MsgLazygitFrameClosed:
@@ -125,6 +128,15 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.RepoPathInputActive {
 			return handleRepoPathInputKey(m, msg)
+		}
+		if msg.Type == tea.KeyCtrlC {
+			return m, tea.Quit
+		}
+		if key.Matches(msg, m.Keys.Quit) {
+			return m, tea.Quit
+		}
+		if tab, ok := tabFromKey(m, msg); ok {
+			return updateModel(m, MsgSetActiveTab{Tab: tab})
 		}
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
@@ -191,6 +203,10 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return syncOnSelectionChanged(m)
 		}
+	case tea.WindowSizeMsg:
+		m = applyWindowSize(m, msg.Width, msg.Height)
+		m = resizeLazygitViewport(m)
+		return m, nil
 	}
 
 	return m, nil
@@ -448,6 +464,7 @@ func handleSyncRefreshCompleted(m Model, msg MsgSyncRefreshCompleted) (Model, te
 			if msg.Status.Release != "" {
 				snapshot.Release = msg.Status.Release
 			}
+			snapshot.ReleaseRun = msg.Status.ReleaseRun
 			snapshot.LastSyncedAt = time.Now().UTC()
 			snapshot.IsStale = false
 			snapshot.LatestError = ""
@@ -595,6 +612,40 @@ func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
 	}
 }
 
+func resizeLazygitViewport(m Model) Model {
+	if m.ActiveTab != TabLazygit || m.LazygitSessionManager == nil || m.LazygitSessionID == "" {
+		return m
+	}
+	cols, rows, ok := lazygitViewportSize(m)
+	if !ok {
+		return m
+	}
+	if err := m.LazygitSessionManager.ResizeSession(m.LazygitSessionID, cols, rows); err != nil {
+		m.StatusMessage = "failed to resize lazygit viewport: " + err.Error()
+	}
+	return m
+}
+
+func lazygitViewportSize(m Model) (cols, rows int, ok bool) {
+	if m.CenterPaneWidth <= 0 || m.WindowHeight <= 0 {
+		return 0, 0, false
+	}
+
+	textCols := m.CenterPaneWidth - 4 // pane border + horizontal padding
+	if textCols < 1 {
+		textCols = 1
+	}
+	textRows := m.WindowHeight - 2 // pane border
+	if textRows < 1 {
+		textRows = 1
+	}
+	contentRows := textRows - 3 // "Center", "tabs", "active tab"
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	return textCols, contentRows, true
+}
+
 func forwardLazygitInput(m Model, msg tea.KeyMsg) Model {
 	if m.ActiveTab != TabLazygit {
 		return m
@@ -737,4 +788,114 @@ func attemptRepoRecovery(m Model) (Model, bool) {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func tabFromKey(m Model, msg tea.KeyMsg) (Tab, bool) {
+	switch {
+	case key.Matches(msg, m.Keys.NextTab):
+		return nextTab(m.ActiveTab, m.CenterTabs(), 1), true
+	case key.Matches(msg, m.Keys.PrevTab):
+		return nextTab(m.ActiveTab, m.CenterTabs(), -1), true
+	case key.Matches(msg, m.Keys.TabOverview):
+		return TabOverview, true
+	case key.Matches(msg, m.Keys.TabWorktrees):
+		return TabWorktrees, true
+	case key.Matches(msg, m.Keys.TabLazygit):
+		return TabLazygit, true
+	case key.Matches(msg, m.Keys.TabDiff):
+		return TabDiff, true
+	default:
+		return "", false
+	}
+}
+
+func nextTab(current Tab, tabs []Tab, delta int) Tab {
+	if len(tabs) == 0 {
+		return current
+	}
+
+	currentIndex := 0
+	found := false
+	for i := range tabs {
+		if tabs[i] == current {
+			currentIndex = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		return tabs[0]
+	}
+
+	next := (currentIndex + delta) % len(tabs)
+	if next < 0 {
+		next += len(tabs)
+	}
+	return tabs[next]
+}
+
+func applyWindowSize(m Model, width, height int) Model {
+	if width <= 0 || height <= 0 {
+		return m
+	}
+
+	left, center, right := calculatePaneWidths(width)
+	m.WindowWidth = width
+	m.WindowHeight = height
+	m.LeftPaneWidth = left
+	m.CenterPaneWidth = center
+	m.RightPaneWidth = right
+	return m
+}
+
+func calculatePaneWidths(totalWidth int) (left, center, right int) {
+	const (
+		minLeft   = 20
+		minCenter = 30
+		minRight  = 24
+	)
+
+	if totalWidth <= 0 {
+		return 30, 80, 40
+	}
+
+	if totalWidth < minLeft+minCenter+minRight {
+		left = maxInt(minLeft, totalWidth/4)
+		right = maxInt(minRight, totalWidth/4)
+		center = totalWidth - left - right
+		if center < 1 {
+			center = 1
+		}
+		return left, center, right
+	}
+
+	left = maxInt(minLeft, totalWidth*24/100)
+	right = maxInt(minRight, totalWidth*26/100)
+	center = totalWidth - left - right
+
+	if center < minCenter {
+		deficit := minCenter - center
+		shrinkRight := minInt(deficit, right-minRight)
+		right -= shrinkRight
+		deficit -= shrinkRight
+		shrinkLeft := minInt(deficit, left-minLeft)
+		left -= shrinkLeft
+		center = totalWidth - left - right
+	}
+
+	return left, maxInt(1, center), right
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

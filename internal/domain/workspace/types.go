@@ -49,18 +49,27 @@ const (
 )
 
 type RepoStatus struct {
-	PR      Status `json:"pr"`
-	CI      Status `json:"ci"`
-	Release Status `json:"release"`
+	PR         Status     `json:"pr"`
+	CI         Status     `json:"ci"`
+	Release    Status     `json:"release"`
+	ReleaseRun ReleaseRun `json:"release_run,omitempty"`
 }
 
 type RepoStatusSnapshot struct {
-	PR           Status    `json:"pr"`
-	CI           Status    `json:"ci"`
-	Release      Status    `json:"release"`
-	LastSyncedAt time.Time `json:"last_synced_at"`
-	IsStale      bool      `json:"is_stale"`
-	LatestError  string    `json:"latest_error,omitempty"`
+	PR           Status     `json:"pr"`
+	CI           Status     `json:"ci"`
+	Release      Status     `json:"release"`
+	ReleaseRun   ReleaseRun `json:"release_run,omitempty"`
+	LastSyncedAt time.Time  `json:"last_synced_at"`
+	IsStale      bool       `json:"is_stale"`
+	LatestError  string     `json:"latest_error,omitempty"`
+}
+
+type ReleaseRun struct {
+	Name      string    `json:"name,omitempty"`
+	Event     string    `json:"event,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
 
 func StatusFromGitHubRun(status, conclusion string) Status {

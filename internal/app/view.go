@@ -5,12 +5,72 @@ import (
 	"time"
 
 	"github.com/allenneverland/gh-workspace/internal/domain/workspace"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func renderView(m Model) string {
+	shouldTrim := m.WindowWidth > 0
+	if m.WindowWidth > 0 && m.WindowWidth < 100 {
+		stackedHeights := splitHeights(m.WindowHeight, 3)
+		width := m.WindowWidth
+		if width < 1 {
+			width = 1
+		}
+
+		left := renderPane(
+			m.renderLeftPane(),
+			width,
+			stackedHeights[0],
+			shouldTrim,
+		)
+		center := renderPane(
+			m.renderCenterPane(),
+			width,
+			stackedHeights[1],
+			shouldTrim,
+		)
+		right := renderPane(
+			m.renderRightPane(),
+			width,
+			stackedHeights[2],
+			shouldTrim,
+		)
+		return lipgloss.JoinVertical(lipgloss.Left, left, center, right)
+	}
+
+	left := renderPane(
+		m.renderLeftPane(),
+		m.LeftPaneWidth,
+		m.WindowHeight,
+		shouldTrim,
+	)
+	center := renderPane(
+		m.renderCenterPane(),
+		m.CenterPaneWidth,
+		m.WindowHeight,
+		shouldTrim,
+	)
+	right := renderPane(
+		m.renderRightPane(),
+		m.RightPaneWidth,
+		m.WindowHeight,
+		shouldTrim,
+	)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, center, right)
+}
+
+func (m Model) renderCenterTabs() string {
+	labels := make([]string, 0, len(m.CenterTabs()))
+	for _, tab := range m.CenterTabs() {
+		labels = append(labels, string(tab))
+	}
+	return "tabs: " + strings.Join(labels, " | ")
+}
+
+func (m Model) renderCenterPane() string {
 	var out strings.Builder
-	out.WriteString(m.renderLeftPane())
-	out.WriteString("\n\nCenter")
+	out.WriteString("Center")
 	out.WriteString("\n" + m.renderCenterTabs())
 	out.WriteString("\nactive tab: " + string(m.ActiveTab))
 	switch m.ActiveTab {
@@ -27,17 +87,7 @@ func renderView(m Model) string {
 		out.WriteString("\n")
 		out.WriteString(m.renderDiffCenter())
 	}
-	out.WriteString("\n\n")
-	out.WriteString(m.renderRightPane())
 	return out.String()
-}
-
-func (m Model) renderCenterTabs() string {
-	labels := make([]string, 0, len(m.CenterTabs()))
-	for _, tab := range m.CenterTabs() {
-		labels = append(labels, string(tab))
-	}
-	return "tabs: " + strings.Join(labels, " | ")
 }
 
 func (m Model) renderLeftPane() string {
@@ -138,6 +188,13 @@ func (m Model) renderLazygitCenter() string {
 	if !ok || repo.ID == "" {
 		return "請先選擇 repo"
 	}
+	if m.LazygitSessionID == "" {
+		status := strings.TrimSpace(m.StatusMessage)
+		if strings.Contains(strings.ToLower(status), "lazygit") {
+			return status
+		}
+		return "Lazygit 尚未啟動"
+	}
 	if m.LazygitCenterFrameText == "" {
 		return "Lazygit 啟動中..."
 	}
@@ -199,6 +256,10 @@ func (m Model) renderRightPane() string {
 		out.WriteString("\npr: " + string(workspace.StatusNeutral))
 		out.WriteString("\nci: " + string(workspace.StatusNeutral))
 		out.WriteString("\nrelease: " + string(workspace.StatusUnconfigured))
+		out.WriteString("\npublishRun: -")
+		out.WriteString("\npublishEvent: -")
+		out.WriteString("\npublishUpdatedAt: -")
+		out.WriteString("\npublishUrl: -")
 		out.WriteString("\nlastSyncedAt: -")
 		return out.String()
 	}
@@ -208,6 +269,26 @@ func (m Model) renderRightPane() string {
 	out.WriteString("\npr: " + statusLabel(snapshot.PR))
 	out.WriteString("\nci: " + statusLabel(snapshot.CI))
 	out.WriteString("\nrelease: " + statusLabel(snapshot.Release))
+	if strings.TrimSpace(snapshot.ReleaseRun.Name) == "" {
+		out.WriteString("\npublishRun: -")
+	} else {
+		out.WriteString("\npublishRun: " + snapshot.ReleaseRun.Name)
+	}
+	if strings.TrimSpace(snapshot.ReleaseRun.Event) == "" {
+		out.WriteString("\npublishEvent: -")
+	} else {
+		out.WriteString("\npublishEvent: " + snapshot.ReleaseRun.Event)
+	}
+	if snapshot.ReleaseRun.UpdatedAt.IsZero() {
+		out.WriteString("\npublishUpdatedAt: -")
+	} else {
+		out.WriteString("\npublishUpdatedAt: " + snapshot.ReleaseRun.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	if strings.TrimSpace(snapshot.ReleaseRun.URL) == "" {
+		out.WriteString("\npublishUrl: -")
+	} else {
+		out.WriteString("\npublishUrl: " + snapshot.ReleaseRun.URL)
+	}
 
 	if snapshot.LastSyncedAt.IsZero() {
 		out.WriteString("\nlastSyncedAt: -")
@@ -222,6 +303,97 @@ func (m Model) renderRightPane() string {
 	}
 
 	return out.String()
+}
+
+func renderPane(content string, width, height int, trim bool) string {
+	if width <= 0 {
+		width = 1
+	}
+
+	contentWidth := width - 2 // compensate border width
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(0, 1).
+		Width(contentWidth)
+	contentHeight := 0
+	if height > 0 {
+		contentHeight = height - 2 // compensate border height
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
+		style = style.Height(contentHeight)
+	}
+
+	textWidth := contentWidth - 2 // horizontal padding
+	if textWidth < 1 {
+		textWidth = 1
+	}
+	if trim {
+		content = trimLines(content, textWidth)
+		if contentHeight > 0 {
+			content = trimLineCount(content, contentHeight)
+		}
+	}
+	return style.Render(content)
+}
+
+func splitHeights(total, parts int) []int {
+	if parts <= 0 {
+		return nil
+	}
+
+	heights := make([]int, parts)
+	if total <= 0 {
+		return heights
+	}
+
+	base := total / parts
+	rem := total % parts
+	for i := 0; i < parts; i++ {
+		heights[i] = base
+		if i < rem {
+			heights[i]++
+		}
+	}
+	return heights
+}
+
+func trimLines(content string, maxWidth int) string {
+	if maxWidth < 1 {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = trimLine(line, maxWidth)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func trimLine(line string, maxWidth int) string {
+	if ansi.StringWidth(line) <= maxWidth {
+		return line
+	}
+	if maxWidth <= 3 {
+		return ansi.Truncate(line, maxWidth, "")
+	}
+	return ansi.Truncate(line, maxWidth, "...")
+}
+
+func trimLineCount(content string, maxLines int) string {
+	if maxLines < 1 {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) <= maxLines {
+		return content
+	}
+	return strings.Join(lines[:maxLines], "\n")
 }
 
 func statusLabel(st workspace.Status) string {
