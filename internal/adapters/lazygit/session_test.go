@@ -3,10 +3,15 @@ package lazygit
 import (
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 func TestLazygitSessionManager_StartSession_ReusesByRepoPath(t *testing.T) {
@@ -39,6 +44,44 @@ func TestLazygitSessionManager_StartSession_ReusesByRepoPath(t *testing.T) {
 	}
 	if third.ID == first.ID {
 		t.Fatalf("expected different session id for different repo, got same id %q", third.ID)
+	}
+}
+
+func TestStartLazygitProcess_UsesNonZeroDefaultPTYSize(t *testing.T) {
+	originalStart := ptyStartWithSize
+	defer func() {
+		ptyStartWithSize = originalStart
+	}()
+
+	ptmx, tty, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	defer func() {
+		_ = ptmx.Close()
+		_ = tty.Close()
+	}()
+
+	var gotRows uint16
+	var gotCols uint16
+	ptyStartWithSize = func(cmd *exec.Cmd, sz *pty.Winsize) (*os.File, error) {
+		if sz == nil {
+			t.Fatal("expected non-nil pty size")
+		}
+		gotRows = sz.Rows
+		gotCols = sz.Cols
+		return ptmx, nil
+	}
+
+	proc, err := startLazygitProcess("/tmp")
+	if err != nil {
+		t.Fatalf("startLazygitProcess returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("expected non-nil session process")
+	}
+	if gotRows == 0 || gotCols == 0 {
+		t.Fatalf("expected non-zero default PTY size, got rows=%d cols=%d", gotRows, gotCols)
 	}
 }
 
@@ -75,18 +118,77 @@ func TestLazygitSessionManager_ReaderEmitsFrames(t *testing.T) {
 		t.Fatalf("expected start to succeed, got error: %v", err)
 	}
 
-	pty.emit("frame-one")
+	pty.emit("\x1b[2J\x1b[Hframe-one")
 
 	select {
 	case frame := <-manager.Frames():
 		if frame.SessionID != session.ID {
 			t.Fatalf("expected frame session id %q, got %q", session.ID, frame.SessionID)
 		}
-		if got := string(frame.Data); got != "frame-one" {
-			t.Fatalf("expected frame payload %q, got %q", "frame-one", got)
+		got := string(frame.Data)
+		if strings.Contains(got, "\x1b[2J") {
+			t.Fatalf("expected parsed terminal snapshot without clear-screen control sequence, got %q", got)
+		}
+		if !strings.Contains(got, "frame-one") {
+			t.Fatalf("expected frame payload to include rendered text %q, got %q", "frame-one", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for lazygit frame")
+	}
+}
+
+func TestLazygitSessionManager_ReaderEmitsANSIStyledSnapshot(t *testing.T) {
+	pty := newFakePTY()
+	manager := newSessionManagerWithStarter(func(_ string) (*sessionProcess, error) {
+		return &sessionProcess{pty: pty}, nil
+	})
+
+	_, err := manager.StartSession("/tmp/api")
+	if err != nil {
+		t.Fatalf("expected start to succeed, got error: %v", err)
+	}
+
+	pty.emit("\x1b[31mred\x1b[0m")
+
+	select {
+	case frame := <-manager.Frames():
+		got := string(frame.Data)
+		if !strings.Contains(got, "\x1b[") {
+			t.Fatalf("expected rendered snapshot to keep ansi styling, got %q", got)
+		}
+		if !strings.Contains(got, "red") {
+			t.Fatalf("expected rendered snapshot to include text %q, got %q", "red", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for lazygit frame")
+	}
+}
+
+func TestLazygitSessionManager_ResizeSession_PropagatesToProcess(t *testing.T) {
+	pty := newFakePTY()
+	var gotCols int
+	var gotRows int
+	manager := newSessionManagerWithStarter(func(_ string) (*sessionProcess, error) {
+		return &sessionProcess{
+			pty: pty,
+			resize: func(cols, rows int) error {
+				gotCols = cols
+				gotRows = rows
+				return nil
+			},
+		}, nil
+	})
+
+	session, err := manager.StartSession("/tmp/api")
+	if err != nil {
+		t.Fatalf("expected start to succeed, got error: %v", err)
+	}
+
+	if err := manager.ResizeSession(session.ID, 150, 38); err != nil {
+		t.Fatalf("expected resize to succeed, got error: %v", err)
+	}
+	if gotCols != 150 || gotRows != 38 {
+		t.Fatalf("expected process resize to receive cols=150 rows=38, got cols=%d rows=%d", gotCols, gotRows)
 	}
 }
 
@@ -177,7 +279,7 @@ func TestLazygitSessionManager_ReaderOverflow_DropsOldestKeepsNewest(t *testing.
 	}
 
 	pty.emit("frame-old")
-	pty.emit("frame-new")
+	pty.emit("\x1b[2J\x1b[Hframe-new")
 
 	deadline := time.Now().Add(2 * time.Second)
 	for len(manager.frames) < 1 && time.Now().Before(deadline) {
@@ -189,8 +291,9 @@ func TestLazygitSessionManager_ReaderOverflow_DropsOldestKeepsNewest(t *testing.
 		if frame.SessionID != session.ID {
 			t.Fatalf("expected frame session id %q, got %q", session.ID, frame.SessionID)
 		}
-		if got := string(frame.Data); got != "frame-new" {
-			t.Fatalf("expected overflow policy to keep newest frame %q, got %q", "frame-new", got)
+		got := string(frame.Data)
+		if !strings.Contains(got, "frame-new") {
+			t.Fatalf("expected overflow policy to keep newest frame containing %q, got %q", "frame-new", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for overflow frame")

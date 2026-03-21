@@ -44,12 +44,21 @@ func TestRightPane_UnconfiguredReleasePrecedence_OverridesStoredSnapshot(t *test
 
 func TestRightPane_RendersStatusAndLastSyncedAt(t *testing.T) {
 	m := seededModelWithRepos()
+	m.LeftPaneWidth = 24
+	m.CenterPaneWidth = 48
+	m.RightPaneWidth = 80
 	m.State.Snapshot.Workspaces[0].Repos[0].ReleaseWorkflowRef = ".github/workflows/release.yml"
 	m.State.Snapshot.RepoStatusSnapshots = map[string]workspace.RepoStatusSnapshot{
 		repoStatusSnapshotKey("ws-1", "repo-1"): {
-			PR:           workspace.StatusInProgress,
-			CI:           workspace.StatusFailure,
-			Release:      workspace.StatusSuccess,
+			PR:      workspace.StatusInProgress,
+			CI:      workspace.StatusFailure,
+			Release: workspace.StatusSuccess,
+			ReleaseRun: workspace.ReleaseRun{
+				Name:      "publish",
+				Event:     "release",
+				URL:       "https://github.com/acme/svc/actions/runs/42",
+				UpdatedAt: time.Date(2026, time.March, 20, 8, 29, 30, 0, time.UTC),
+			},
 			LastSyncedAt: time.Date(2026, time.March, 20, 8, 30, 0, 0, time.UTC),
 		},
 	}
@@ -59,6 +68,10 @@ func TestRightPane_RendersStatusAndLastSyncedAt(t *testing.T) {
 	assertContains(t, out, "pr: in_progress")
 	assertContains(t, out, "ci: failure")
 	assertContains(t, out, "release: success")
+	assertContains(t, out, "publishRun: publish")
+	assertContains(t, out, "publishEvent: release")
+	assertContains(t, out, "publishUpdatedAt: 2026-03-20T08:29:30Z")
+	assertContains(t, out, "publishUrl: https://github.com/acme/svc/actions/runs/42")
 	assertContains(t, out, "lastSyncedAt: 2026-03-20T08:30:00Z")
 }
 

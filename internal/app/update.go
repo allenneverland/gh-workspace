@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			next = ensureLazygitSession(next)
+			next = resizeLazygitViewport(next)
 			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
 			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
@@ -45,6 +47,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := syncOnSelectionChanged(m)
 		if m.ActiveTab == TabLazygit {
 			next = ensureLazygitSession(next)
+			next = resizeLazygitViewport(next)
 			afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
 			return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
 		}
@@ -65,10 +68,17 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		return toggleAutoPolling(m)
 	case MsgSyncRefreshCompleted:
 		return handleSyncRefreshCompleted(m, msg)
+	case MsgOverlayScanScheduled:
+		return handleOverlayScanScheduled(m, msg)
+	case MsgOverlayScanCompleted:
+		return handleOverlayScanCompleted(m, msg)
+	case MsgOverlaySaveCompleted:
+		return handleOverlaySaveCompleted(m, msg)
 	case MsgSetActiveTab:
 		m.ActiveTab = msg.Tab
 		if m.ActiveTab == TabLazygit {
 			m = ensureLazygitSession(m)
+			m = resizeLazygitViewport(m)
 			return scheduleLazygitFrameWait(m)
 		}
 		if m.ActiveTab == TabDiff {
@@ -113,7 +123,7 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	case MsgLazygitFrame:
 		m.lazygitFrameListenerInFlight = false
 		if msg.SessionID == m.LazygitSessionID {
-			m.LazygitCenterFrameText += string(msg.Data)
+			m.LazygitCenterFrameText = string(msg.Data)
 		}
 		return scheduleLazygitFrameWait(m)
 	case MsgLazygitFrameClosed:
@@ -126,13 +136,37 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		if m.RepoPathInputActive {
 			return handleRepoPathInputKey(m, msg)
 		}
+		if msg.Type == tea.KeyCtrlC {
+			return m, tea.Quit
+		}
+		if key.Matches(msg, m.Keys.Quit) {
+			return m, tea.Quit
+		}
+		if m.Overlay.Active {
+			var cmd tea.Cmd
+			var handled bool
+			m, cmd, handled = updateWorkspaceOverlayKey(m, msg)
+			if handled {
+				return m, cmd
+			}
+		}
+		if tab, ok := tabFromKey(m, msg); ok {
+			return updateModel(m, MsgSetActiveTab{Tab: tab})
+		}
 		if lazygitOwnsKeys(m) {
 			return forwardLazygitInput(m, msg), nil
 		}
 		if diffTabBlocksMutatingKeys(m, msg) {
 			return m, nil
 		}
+		var handled bool
 		switch {
+		case key.Matches(msg, m.Keys.WorkspaceOverlay):
+			var cmd tea.Cmd
+			m, cmd, handled = updateWorkspaceOverlayKey(m, msg)
+			if handled {
+				return m, cmd
+			}
 		case key.Matches(msg, m.Keys.AddRepo):
 			if m.UIMode == ModeFolder {
 				m.RepoPathInput = newRepoPathInput()
@@ -191,9 +225,304 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 			}
 			return syncOnSelectionChanged(m)
 		}
+	case tea.WindowSizeMsg:
+		m = applyWindowSize(m, msg.Width, msg.Height)
+		m = resizeLazygitViewport(m)
+		return m, nil
 	}
 
 	return m, nil
+}
+
+func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	defaultScanPath := workspaceOverlayDefaultScanPath(m.State)
+
+	if m.Overlay.Active {
+		switch {
+		case msg.Type == tea.KeyEsc:
+			m.Overlay = resetWorkspaceOverlay(defaultScanPath)
+			return m, nil, true
+		case msg.Type == tea.KeyTab:
+			m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, true)
+			return m, nil, true
+		case msg.Type == tea.KeyShiftTab:
+			m.Overlay = cycleWorkspaceOverlayFocus(m.Overlay, false)
+			return m, nil, true
+		}
+
+		if next, cmd, handled := updateWorkspaceOverlayTextInput(m, msg); handled {
+			return next, cmd, true
+		}
+
+		switch {
+		case key.Matches(msg, m.Keys.WorkspaceOverlay):
+			m.Overlay = resetWorkspaceOverlay(defaultScanPath)
+			return m, nil, true
+		case key.Matches(msg, m.Keys.OverlayCreate):
+			if m.Overlay.Mode == OverlayModeSwitch {
+				m.Overlay = m.Overlay.enterCreateMode()
+			}
+			return m, nil, true
+		case key.Matches(msg, m.Keys.OverlaySave):
+			return beginWorkspaceOverlaySave(m)
+		case msg.Type == tea.KeyEnter && m.Overlay.Mode == OverlayModeCreate && m.Overlay.Focus == OverlayFocusCandidateList:
+			m = overlayAddSelectedCandidate(m)
+			return m, nil, true
+		default:
+			return m, nil, false
+		}
+	}
+
+	if key.Matches(msg, m.Keys.WorkspaceOverlay) {
+		m.Overlay = openWorkspaceOverlay(m.State, defaultScanPath)
+		return m, nil, true
+	}
+
+	return m, nil, false
+}
+
+func updateWorkspaceOverlayTextInput(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if !m.Overlay.Active || m.Overlay.Mode != OverlayModeCreate {
+		return m, nil, false
+	}
+
+	switch m.Overlay.Focus {
+	case OverlayFocusScanPathInput:
+		next, cmd, handled := updateOverlayScanPathInput(m, msg)
+		if handled {
+			return next, cmd, true
+		}
+	case OverlayFocusCreateNameInput:
+		next, handled := applyOverlayTextInput(m.Overlay.CreateNameInput, msg)
+		if handled {
+			m.Overlay.CreateNameInput = next
+			m.Overlay.LastError = ""
+			return m, nil, true
+		}
+	case OverlayFocusCandidateList:
+		next, handled := applyOverlayTextInput(m.Overlay.CandidateQuery, msg)
+		if handled {
+			m.Overlay.CandidateQuery = next
+			m.Overlay.SelectedCandidateIndex = candidateSelectionIndex(m.Overlay.Candidates, m.Overlay.CandidateQuery, 0)
+			m.Overlay.LastError = ""
+			return m, nil, true
+		}
+	}
+
+	return m, nil, false
+}
+
+func updateOverlayScanPathInput(m Model, msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	next, changed := applyOverlayTextInput(m.Overlay.ScanPathInput, msg)
+	if !changed {
+		return m, nil, false
+	}
+
+	m.Overlay.ScanPathInput = next
+	m.Overlay.ScanRevision++
+	m.Overlay.ScanInFlight = true
+	m.Overlay.LastError = ""
+	revision := m.Overlay.ScanRevision
+
+	return m, func() tea.Msg {
+		return MsgOverlayScanScheduled{Revision: revision}
+	}, true
+}
+
+func applyOverlayTextInput(current string, msg tea.KeyMsg) (string, bool) {
+	switch msg.Type {
+	case tea.KeyRunes:
+		if len(msg.Runes) == 0 {
+			return current, false
+		}
+		return current + string(msg.Runes), true
+	case tea.KeySpace:
+		return current + " ", true
+	case tea.KeyBackspace, tea.KeyDelete:
+		if current == "" {
+			return current, false
+		}
+		runes := []rune(current)
+		if len(runes) == 0 {
+			return current, false
+		}
+		return string(runes[:len(runes)-1]), true
+	default:
+		return current, false
+	}
+}
+
+func updateOverlayScanScheduled(m Model, msg MsgOverlayScanScheduled) (Model, bool) {
+	if !m.Overlay.Active || msg.Revision != m.Overlay.ScanRevision {
+		return m, false
+	}
+
+	m.Overlay.ScanInFlight = true
+	m.Overlay.LastError = ""
+	return m, true
+}
+
+func handleOverlayScanScheduled(m Model, msg MsgOverlayScanScheduled) (Model, tea.Cmd) {
+	updated, matched := updateOverlayScanScheduled(m, msg)
+	if !matched {
+		return m, nil
+	}
+	return updated, nil
+}
+
+func handleOverlayScanCompleted(m Model, msg MsgOverlayScanCompleted) (Model, tea.Cmd) {
+	if !m.Overlay.Active || msg.Revision != m.Overlay.ScanRevision {
+		return m, nil
+	}
+
+	m.Overlay.ScanInFlight = false
+	if msg.Err != nil {
+		m.Overlay.LastError = "scan failed: " + msg.Err.Error()
+		return m, nil
+	}
+
+	m.Overlay.Candidates = append([]RepoCandidate(nil), msg.Candidates...)
+	m.Overlay.SelectedCandidateIndex = candidateSelectionIndex(m.Overlay.Candidates, m.Overlay.CandidateQuery, 0)
+	m.Overlay.LastError = ""
+	return m, nil
+}
+
+func handleOverlaySaveCompleted(m Model, msg MsgOverlaySaveCompleted) (Model, tea.Cmd) {
+	if !m.Overlay.Active || !m.Overlay.SaveInFlight || msg.Revision != m.Overlay.SaveRevision {
+		return m, nil
+	}
+
+	m.Overlay.SaveInFlight = false
+	if msg.Err != nil {
+		m.StatusMessage = msg.Err.Error()
+		m.Overlay.LastError = msg.Err.Error()
+		return m, nil
+	}
+
+	m.State = NewWorkspaceState(msg.State)
+	m.UIMode = ModeWorkspace
+	m.Overlay = resetWorkspaceOverlay(workspaceOverlayDefaultScanPath(m.State))
+	m = publishSyncState(m)
+
+	next, syncCmd := syncOnSelectionChanged(m)
+	if next.ActiveTab == TabLazygit {
+		next = ensureLazygitSession(next)
+		next = resizeLazygitViewport(next)
+		afterLazygit, lazygitCmd := scheduleLazygitFrameWait(next)
+		return afterLazygit, tea.Batch(syncCmd, lazygitCmd)
+	}
+	if next.ActiveTab == TabDiff {
+		afterDiff, diffCmd := requestDiffRender(next)
+		return afterDiff, tea.Batch(syncCmd, diffCmd)
+	}
+	return next, syncCmd
+}
+
+func beginWorkspaceOverlaySave(m Model) (Model, tea.Cmd, bool) {
+	if m.Overlay.Mode != OverlayModeCreate {
+		return m, nil, true
+	}
+	if m.Overlay.Focus != OverlayFocusStagedRepoList {
+		return m, nil, false
+	}
+	if m.Overlay.SaveInFlight {
+		return m, nil, true
+	}
+
+	revision := m.overlaySaveRequestCounter + 1
+	cmd := m.workspaceOverlaySaveCommand(revision, WorkspaceOverlayDraft{
+		Name:        m.Overlay.CreateNameInput,
+		StagedRepos: append([]RepoCandidate(nil), m.Overlay.StagedRepos...),
+	})
+	if cmd == nil {
+		m.StatusMessage = "workspace overlay save unavailable"
+		return m, nil, true
+	}
+
+	m.overlaySaveRequestCounter = revision
+	m.Overlay.SaveInFlight = true
+	m.Overlay.SaveRevision = revision
+	m.Overlay.LastError = ""
+	return m, cmd, true
+}
+
+func overlayAddSelectedCandidate(m Model) Model {
+	candidate, ok := selectedOverlayCandidate(m)
+	if !ok {
+		return m
+	}
+
+	for _, staged := range m.Overlay.StagedRepos {
+		if normalizedOverlayRepoPath(staged.Path) == normalizedOverlayRepoPath(candidate.Path) {
+			m.Overlay.LastError = "already added"
+			return m
+		}
+	}
+
+	m.Overlay.StagedRepos = append(m.Overlay.StagedRepos, candidate)
+	m.Overlay.LastError = ""
+	return m
+}
+
+func normalizedOverlayRepoPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Clean(trimmed)
+}
+
+func selectedOverlayCandidate(m Model) (RepoCandidate, bool) {
+	candidates := FilterCandidates(m.Overlay.Candidates, m.Overlay.CandidateQuery)
+	idx := candidateSelectionIndex(candidates, "", m.Overlay.SelectedCandidateIndex)
+	if idx < 0 || idx >= len(candidates) {
+		return RepoCandidate{}, false
+	}
+	return candidates[idx], true
+}
+
+func candidateSelectionIndex(candidates []RepoCandidate, query string, current int) int {
+	visible := FilterCandidates(candidates, query)
+	if len(visible) == 0 {
+		return -1
+	}
+	if current < 0 || current >= len(visible) {
+		return 0
+	}
+	return current
+}
+
+func cycleWorkspaceOverlayFocus(overlay WorkspaceOverlayState, forward bool) WorkspaceOverlayState {
+	if overlay.Mode != OverlayModeCreate {
+		overlay.Focus = OverlayFocusWorkspaceList
+		return overlay
+	}
+
+	order := []OverlayFocus{
+		OverlayFocusCreateNameInput,
+		OverlayFocusScanPathInput,
+		OverlayFocusCandidateList,
+		OverlayFocusStagedRepoList,
+	}
+	current := 0
+	for i, focus := range order {
+		if overlay.Focus == focus {
+			current = i
+			break
+		}
+	}
+
+	if forward {
+		current = (current + 1) % len(order)
+	} else {
+		current--
+		if current < 0 {
+			current = len(order) - 1
+		}
+	}
+
+	overlay.Focus = order[current]
+	return overlay
 }
 
 func selectAdjacentWorkspaceModeWorkspace(m Model, forward bool) (Model, bool) {
@@ -448,6 +777,7 @@ func handleSyncRefreshCompleted(m Model, msg MsgSyncRefreshCompleted) (Model, te
 			if msg.Status.Release != "" {
 				snapshot.Release = msg.Status.Release
 			}
+			snapshot.ReleaseRun = msg.Status.ReleaseRun
 			snapshot.LastSyncedAt = time.Now().UTC()
 			snapshot.IsStale = false
 			snapshot.LatestError = ""
@@ -595,6 +925,40 @@ func waitForLazygitFrame(manager LazygitSessionManager) tea.Cmd {
 	}
 }
 
+func resizeLazygitViewport(m Model) Model {
+	if m.ActiveTab != TabLazygit || m.LazygitSessionManager == nil || m.LazygitSessionID == "" {
+		return m
+	}
+	cols, rows, ok := lazygitViewportSize(m)
+	if !ok {
+		return m
+	}
+	if err := m.LazygitSessionManager.ResizeSession(m.LazygitSessionID, cols, rows); err != nil {
+		m.StatusMessage = "failed to resize lazygit viewport: " + err.Error()
+	}
+	return m
+}
+
+func lazygitViewportSize(m Model) (cols, rows int, ok bool) {
+	if m.CenterPaneWidth <= 0 || m.WindowHeight <= 0 {
+		return 0, 0, false
+	}
+
+	textCols := m.CenterPaneWidth - 4 // pane border + horizontal padding
+	if textCols < 1 {
+		textCols = 1
+	}
+	textRows := m.WindowHeight - 2 // pane border
+	if textRows < 1 {
+		textRows = 1
+	}
+	contentRows := textRows - 3 // "Center", "tabs", "active tab"
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	return textCols, contentRows, true
+}
+
 func forwardLazygitInput(m Model, msg tea.KeyMsg) Model {
 	if m.ActiveTab != TabLazygit {
 		return m
@@ -737,4 +1101,114 @@ func attemptRepoRecovery(m Model) (Model, bool) {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func tabFromKey(m Model, msg tea.KeyMsg) (Tab, bool) {
+	switch {
+	case key.Matches(msg, m.Keys.NextTab):
+		return nextTab(m.ActiveTab, m.CenterTabs(), 1), true
+	case key.Matches(msg, m.Keys.PrevTab):
+		return nextTab(m.ActiveTab, m.CenterTabs(), -1), true
+	case key.Matches(msg, m.Keys.TabOverview):
+		return TabOverview, true
+	case key.Matches(msg, m.Keys.TabWorktrees):
+		return TabWorktrees, true
+	case key.Matches(msg, m.Keys.TabLazygit):
+		return TabLazygit, true
+	case key.Matches(msg, m.Keys.TabDiff):
+		return TabDiff, true
+	default:
+		return "", false
+	}
+}
+
+func nextTab(current Tab, tabs []Tab, delta int) Tab {
+	if len(tabs) == 0 {
+		return current
+	}
+
+	currentIndex := 0
+	found := false
+	for i := range tabs {
+		if tabs[i] == current {
+			currentIndex = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		return tabs[0]
+	}
+
+	next := (currentIndex + delta) % len(tabs)
+	if next < 0 {
+		next += len(tabs)
+	}
+	return tabs[next]
+}
+
+func applyWindowSize(m Model, width, height int) Model {
+	if width <= 0 || height <= 0 {
+		return m
+	}
+
+	left, center, right := calculatePaneWidths(width)
+	m.WindowWidth = width
+	m.WindowHeight = height
+	m.LeftPaneWidth = left
+	m.CenterPaneWidth = center
+	m.RightPaneWidth = right
+	return m
+}
+
+func calculatePaneWidths(totalWidth int) (left, center, right int) {
+	const (
+		minLeft   = 20
+		minCenter = 30
+		minRight  = 24
+	)
+
+	if totalWidth <= 0 {
+		return 30, 80, 40
+	}
+
+	if totalWidth < minLeft+minCenter+minRight {
+		left = maxInt(minLeft, totalWidth/4)
+		right = maxInt(minRight, totalWidth/4)
+		center = totalWidth - left - right
+		if center < 1 {
+			center = 1
+		}
+		return left, center, right
+	}
+
+	left = maxInt(minLeft, totalWidth*24/100)
+	right = maxInt(minRight, totalWidth*26/100)
+	center = totalWidth - left - right
+
+	if center < minCenter {
+		deficit := minCenter - center
+		shrinkRight := minInt(deficit, right-minRight)
+		right -= shrinkRight
+		deficit -= shrinkRight
+		shrinkLeft := minInt(deficit, left-minLeft)
+		left -= shrinkLeft
+		center = totalWidth - left - right
+	}
+
+	return left, maxInt(1, center), right
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

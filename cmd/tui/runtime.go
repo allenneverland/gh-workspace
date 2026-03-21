@@ -24,15 +24,23 @@ const (
 
 var ErrWorkspaceNotFound = errors.New("workspace not found")
 
+var runtimeGetwd = os.Getwd
+
 func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, func() error, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	initialMode := uiModeForLaunchMode(opts.Mode)
+	defaultOverlayScanPath, err := runtimeGetwd()
+	if err != nil {
+		defaultOverlayScanPath = ""
+	}
 	if isTestMode() {
 		model := app.NewModel(app.Config{
-			InitialUIMode: initialMode,
-			SyncEngine:    syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{}),
+			InitialUIMode:           initialMode,
+			SyncEngine:              syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{}),
+			WorkspaceOverlayScanner: runtimeWorkspaceOverlayScanner{},
+			DefaultOverlayScanPath:  defaultOverlayScanPath,
 		})
 		return model, nil, nil
 	}
@@ -68,12 +76,14 @@ func composeRuntimeModel(ctx context.Context, opts LaunchOptions) (app.Model, fu
 	engine := syncengine.NewEngine(selectedRepoFetcher)
 
 	model := app.NewModel(app.Config{
-		InitialState:       loadedState,
-		InitialUIMode:      initialMode,
-		SyncEngine:         engine,
-		StateStore:         stateStore,
-		SyncStatePublisher: selectedRepoFetcher,
-		RepoPathSubmitter:  runtimeRepoPathSubmitter{stateStore: stateStore},
+		InitialState:            loadedState,
+		InitialUIMode:           initialMode,
+		SyncEngine:              engine,
+		StateStore:              stateStore,
+		SyncStatePublisher:      selectedRepoFetcher,
+		RepoPathSubmitter:       runtimeRepoPathSubmitter{stateStore: stateStore},
+		WorkspaceOverlayScanner: runtimeWorkspaceOverlayScanner{},
+		DefaultOverlayScanPath:  defaultOverlayScanPath,
 	})
 	if strings.TrimSpace(statusMessage) != "" {
 		model.StatusMessage = statusMessage

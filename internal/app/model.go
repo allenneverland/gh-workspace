@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
 	diffadapter "github.com/allenneverland/gh-workspace/internal/adapters/diff"
@@ -31,15 +32,18 @@ const (
 )
 
 type Config struct {
-	InitialState          workspace.State
-	InitialUIMode         UIMode
-	WorktreeAdapter       WorktreeAdapter
-	LazygitSessionManager LazygitSessionManager
-	DiffRenderer          DiffRenderer
-	SyncEngine            SyncEngine
-	StateStore            storepkg.Store
-	SyncStatePublisher    SyncStatePublisher
-	RepoPathSubmitter     RepoPathSubmitter
+	InitialState                   workspace.State
+	InitialUIMode                  UIMode
+	WorktreeAdapter                WorktreeAdapter
+	LazygitSessionManager          LazygitSessionManager
+	DiffRenderer                   DiffRenderer
+	SyncEngine                     SyncEngine
+	StateStore                     storepkg.Store
+	SyncStatePublisher             SyncStatePublisher
+	RepoPathSubmitter              RepoPathSubmitter
+	WorkspaceOverlayScanner        WorkspaceOverlayScanner
+	WorkspaceOverlayDraftCommitter WorkspaceOverlayDraftCommitter
+	DefaultOverlayScanPath         string
 }
 
 type WorktreeItem struct {
@@ -61,6 +65,7 @@ type LazygitFrame = lazygitadapter.Frame
 type LazygitSessionManager interface {
 	StartSession(repoPath string) (LazygitSessionHandle, error)
 	WriteInput(sessionID string, input []byte) error
+	ResizeSession(sessionID string, cols, rows int) error
 	Frames() <-chan LazygitFrame
 }
 
@@ -91,11 +96,26 @@ type RepoPathSubmitter interface {
 	SubmitRepoPath(ctx context.Context, path string) (RepoPathSubmissionResult, error)
 }
 
+type WorkspaceOverlayScanner interface {
+	ScanRepoCandidates(ctx context.Context, rootPath string) ([]RepoCandidate, error)
+}
+
+type WorkspaceOverlayDraft struct {
+	Name        string
+	StagedRepos []RepoCandidate
+}
+
+type WorkspaceOverlayDraftCommitter interface {
+	CommitWorkspaceOverlayDraft(ctx context.Context, draft WorkspaceOverlayDraft) (workspace.State, error)
+}
+
 type WorkspaceState struct {
 	Snapshot workspace.State
 }
 
 type RepoStatusSnapshot = workspace.RepoStatusSnapshot
+
+var DefaultWorkspaceOverlayDraftCommitterFactory func(storepkg.Store) WorkspaceOverlayDraftCommitter
 
 func NewWorkspaceState(st workspace.State) WorkspaceState {
 	state := WorkspaceState{Snapshot: cloneWorkspaceState(st)}
@@ -364,37 +384,44 @@ func normalizeWorkspaceModeState(state *WorkspaceState) bool {
 }
 
 type Model struct {
-	ActiveTab                    Tab
-	UIMode                       UIMode
-	LeftPaneWidth                int
-	CenterPaneWidth              int
-	RightPaneWidth               int
-	State                        WorkspaceState
-	Keys                         KeyMap
-	AddRepoRequested             bool
-	RepoPathInput                RepoPathInput
-	RepoPathInputActive          bool
-	StatusMessage                string
-	StateStore                   storepkg.Store
-	SyncStatePublisher           SyncStatePublisher
-	RepoPathSubmitter            RepoPathSubmitter
-	WorktreeAdapter              WorktreeAdapter
-	Worktrees                    []WorktreeItem
-	LazygitSessionManager        LazygitSessionManager
-	LazygitSessionID             string
-	LazygitCenterFrameText       string
-	DiffRenderer                 DiffRenderer
-	SyncEngine                   SyncEngine
-	DiffOutput                   string
-	DiffStatus                   string
-	DiffLoading                  bool
-	diffRenderRequestID          int
-	diffRenderInFlight           bool
-	diffRenderPending            bool
-	syncCommandInFlight          bool
-	syncRefreshPending           bool
-	syncTickPending              bool
-	lazygitFrameListenerInFlight bool
+	ActiveTab                      Tab
+	UIMode                         UIMode
+	LeftPaneWidth                  int
+	CenterPaneWidth                int
+	RightPaneWidth                 int
+	WindowWidth                    int
+	WindowHeight                   int
+	State                          WorkspaceState
+	Overlay                        WorkspaceOverlayState
+	Keys                           KeyMap
+	AddRepoRequested               bool
+	RepoPathInput                  RepoPathInput
+	RepoPathInputActive            bool
+	StatusMessage                  string
+	StateStore                     storepkg.Store
+	SyncStatePublisher             SyncStatePublisher
+	RepoPathSubmitter              RepoPathSubmitter
+	WorkspaceOverlayScanner        WorkspaceOverlayScanner
+	WorkspaceOverlayDraftCommitter WorkspaceOverlayDraftCommitter
+	DefaultOverlayScanPath         string
+	WorktreeAdapter                WorktreeAdapter
+	Worktrees                      []WorktreeItem
+	LazygitSessionManager          LazygitSessionManager
+	LazygitSessionID               string
+	LazygitCenterFrameText         string
+	DiffRenderer                   DiffRenderer
+	SyncEngine                     SyncEngine
+	DiffOutput                     string
+	DiffStatus                     string
+	DiffLoading                    bool
+	diffRenderRequestID            int
+	diffRenderInFlight             bool
+	diffRenderPending              bool
+	overlaySaveRequestCounter      int
+	syncCommandInFlight            bool
+	syncRefreshPending             bool
+	syncTickPending                bool
+	lazygitFrameListenerInFlight   bool
 }
 
 func NewModel(config Config) Model {
@@ -409,21 +436,25 @@ func NewModel(config Config) Model {
 	}
 
 	m := Model{
-		ActiveTab:             TabOverview,
-		UIMode:                mode,
-		LeftPaneWidth:         30,
-		CenterPaneWidth:       80,
-		RightPaneWidth:        40,
-		State:                 NewWorkspaceState(state),
-		Keys:                  DefaultKeyMap(),
-		RepoPathInput:         newRepoPathInput(),
-		StateStore:            config.StateStore,
-		SyncStatePublisher:    config.SyncStatePublisher,
-		RepoPathSubmitter:     config.RepoPathSubmitter,
-		WorktreeAdapter:       config.WorktreeAdapter,
-		LazygitSessionManager: config.LazygitSessionManager,
-		DiffRenderer:          config.DiffRenderer,
-		SyncEngine:            config.SyncEngine,
+		ActiveTab:                      TabOverview,
+		UIMode:                         mode,
+		LeftPaneWidth:                  30,
+		CenterPaneWidth:                80,
+		RightPaneWidth:                 40,
+		State:                          NewWorkspaceState(state),
+		Overlay:                        resetWorkspaceOverlay(strings.TrimSpace(config.DefaultOverlayScanPath)),
+		Keys:                           DefaultKeyMap(),
+		RepoPathInput:                  newRepoPathInput(),
+		StateStore:                     config.StateStore,
+		SyncStatePublisher:             config.SyncStatePublisher,
+		RepoPathSubmitter:              config.RepoPathSubmitter,
+		WorkspaceOverlayScanner:        config.WorkspaceOverlayScanner,
+		WorkspaceOverlayDraftCommitter: config.WorkspaceOverlayDraftCommitter,
+		DefaultOverlayScanPath:         strings.TrimSpace(config.DefaultOverlayScanPath),
+		WorktreeAdapter:                config.WorktreeAdapter,
+		LazygitSessionManager:          config.LazygitSessionManager,
+		DiffRenderer:                   config.DiffRenderer,
+		SyncEngine:                     config.SyncEngine,
 	}
 	if m.WorktreeAdapter == nil {
 		m.WorktreeAdapter = appWorktreeAdapter{inner: worktreeadapter.NewAdapter(nil)}
@@ -436,6 +467,9 @@ func NewModel(config Config) Model {
 	}
 	if m.SyncEngine == nil {
 		m.SyncEngine = syncengine.NewEngine(syncengine.NoopSelectedRepoStatusFetcher{})
+	}
+	if m.WorkspaceOverlayDraftCommitter == nil && config.StateStore != nil && DefaultWorkspaceOverlayDraftCommitterFactory != nil {
+		m.WorkspaceOverlayDraftCommitter = DefaultWorkspaceOverlayDraftCommitterFactory(config.StateStore)
 	}
 	if m.UIMode == ModeWorkspace {
 		_ = normalizeWorkspaceModeState(&m.State)
@@ -454,6 +488,8 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	updated, cmd := updateModel(m.cloneForUpdate(), msg)
+	updated = applyRuntimeWorkspaceOverlayDefaults(m, updated, msg)
+	cmd = tea.Batch(cmd, updated.workspaceOverlayScanCommand(msg))
 	return updated, cmd
 }
 
@@ -468,7 +504,68 @@ func (m Model) CenterTabs() []Tab {
 func (m Model) cloneForUpdate() Model {
 	cloned := m
 	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
+	cloned.Overlay = cloneWorkspaceOverlayState(m.Overlay)
 	return cloned
+}
+
+func applyRuntimeWorkspaceOverlayDefaults(previous, updated Model, msg tea.Msg) Model {
+	defaultPath := strings.TrimSpace(updated.DefaultOverlayScanPath)
+	if defaultPath == "" {
+		return updated
+	}
+
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return updated
+	}
+
+	switch {
+	case key.Matches(keyMsg, updated.Keys.WorkspaceOverlay) && previous.Overlay.Active != updated.Overlay.Active:
+		updated.Overlay.ScanPathInput = defaultPath
+	case previous.Overlay.Active && !updated.Overlay.Active && keyMsg.Type == tea.KeyEsc:
+		updated.Overlay.ScanPathInput = defaultPath
+	}
+
+	return updated
+}
+
+func (m Model) workspaceOverlayScanCommand(msg tea.Msg) tea.Cmd {
+	scheduled, ok := msg.(MsgOverlayScanScheduled)
+	if !ok {
+		return nil
+	}
+	if m.WorkspaceOverlayScanner == nil {
+		return nil
+	}
+	if !m.Overlay.Active || scheduled.Revision != m.Overlay.ScanRevision {
+		return nil
+	}
+
+	rootPath := strings.TrimSpace(m.Overlay.ScanPathInput)
+	return func() tea.Msg {
+		candidates, err := m.WorkspaceOverlayScanner.ScanRepoCandidates(context.Background(), rootPath)
+		return MsgOverlayScanCompleted{
+			Revision:   scheduled.Revision,
+			Candidates: append([]RepoCandidate(nil), candidates...),
+			Err:        err,
+		}
+	}
+}
+
+func (m Model) workspaceOverlaySaveCommand(revision int, draft WorkspaceOverlayDraft) tea.Cmd {
+	if m.WorkspaceOverlayDraftCommitter == nil {
+		return nil
+	}
+
+	draft.StagedRepos = append([]RepoCandidate(nil), draft.StagedRepos...)
+	return func() tea.Msg {
+		state, err := m.WorkspaceOverlayDraftCommitter.CommitWorkspaceOverlayDraft(context.Background(), draft)
+		return MsgOverlaySaveCompleted{
+			Revision: revision,
+			State:    cloneWorkspaceState(state),
+			Err:      err,
+		}
+	}
 }
 
 func cloneRepoStatusSnapshots(src map[string]RepoStatusSnapshot) map[string]RepoStatusSnapshot {
@@ -498,9 +595,10 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	hasReleaseWorkflow := strings.TrimSpace(repo.ReleaseWorkflowRef) != ""
 
 	snapshot := RepoStatusSnapshot{
-		PR:      workspace.StatusNeutral,
-		CI:      workspace.StatusNeutral,
-		Release: workspace.StatusNeutral,
+		PR:         workspace.StatusNeutral,
+		CI:         workspace.StatusNeutral,
+		Release:    workspace.StatusNeutral,
+		ReleaseRun: workspace.ReleaseRun{},
 	}
 
 	key := repoStatusSnapshotKey(m.State.CurrentWorkspaceID(), repo.ID)
@@ -521,11 +619,13 @@ func (m Model) repoStatusSnapshotForCurrentRepo() RepoStatusSnapshot {
 	if stored.Release != "" {
 		snapshot.Release = stored.Release
 	}
+	snapshot.ReleaseRun = stored.ReleaseRun
 	snapshot.LastSyncedAt = stored.LastSyncedAt
 	snapshot.IsStale = stored.IsStale
 	snapshot.LatestError = stored.LatestError
 	if !hasReleaseWorkflow {
 		snapshot.Release = workspace.StatusUnconfigured
+		snapshot.ReleaseRun = workspace.ReleaseRun{}
 	}
 	return snapshot
 }

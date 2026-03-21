@@ -50,7 +50,7 @@ func run(args []string) error {
 		}()
 	}
 
-	program := tea.NewProgram(model)
+	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		return fmt.Errorf("tui exited with error: %w", err)
 	}

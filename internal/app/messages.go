@@ -18,6 +18,28 @@ type MsgRefreshDiff struct{}
 
 type MsgRequestAddRepo struct{}
 
+type MsgOpenWorkspaceOverlay struct{}
+
+type MsgCloseWorkspaceOverlay struct{}
+
+type MsgEnterWorkspaceOverlayCreate struct{}
+
+type MsgOverlayScanScheduled struct {
+	Revision int
+}
+
+type MsgOverlayScanCompleted struct {
+	Revision   int
+	Candidates []RepoCandidate
+	Err        error
+}
+
+type MsgOverlaySaveCompleted struct {
+	Revision int
+	State    workspace.State
+	Err      error
+}
+
 type MsgSubmitRepoPath struct {
 	Path string
 }
