@@ -18,6 +18,12 @@ type MsgRefreshDiff struct{}
 
 type MsgRequestAddRepo struct{}
 
+type MsgOpenWorkspaceOverlay struct{}
+
+type MsgCloseWorkspaceOverlay struct{}
+
+type MsgEnterWorkspaceOverlayCreate struct{}
+
 type MsgSubmitRepoPath struct {
 	Path string
 }

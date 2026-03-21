@@ -126,14 +126,19 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 		next, syncCmd := requestSyncTick(m)
 		return next, tea.Batch(syncCmd, scheduleSyncPolling(next))
 	case tea.KeyMsg:
-		if m.RepoPathInputActive {
-			return handleRepoPathInputKey(m, msg)
-		}
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
 		}
 		if key.Matches(msg, m.Keys.Quit) {
 			return m, tea.Quit
+		}
+		var handled bool
+		m, handled = updateWorkspaceOverlayKey(m, msg)
+		if handled {
+			return m, nil
+		}
+		if m.RepoPathInputActive {
+			return handleRepoPathInputKey(m, msg)
 		}
 		if tab, ok := tabFromKey(m, msg); ok {
 			return updateModel(m, MsgSetActiveTab{Tab: tab})
@@ -210,6 +215,34 @@ func updateModel(m Model, msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func updateWorkspaceOverlayKey(m Model, msg tea.KeyMsg) (Model, bool) {
+	defaultScanPath := workspaceOverlayDefaultScanPath(m.State)
+
+	switch {
+	case key.Matches(msg, m.Keys.WorkspaceOverlay):
+		if m.Overlay.Active {
+			m.Overlay = resetWorkspaceOverlay(defaultScanPath)
+		} else {
+			m.Overlay = openWorkspaceOverlay(m.State, defaultScanPath)
+		}
+		return m, true
+	case !m.Overlay.Active:
+		return m, false
+	case msg.Type == tea.KeyEsc:
+		m.Overlay = resetWorkspaceOverlay(defaultScanPath)
+		return m, true
+	case key.Matches(msg, m.Keys.OverlayCreate):
+		if m.Overlay.Mode == OverlayModeSwitch {
+			m.Overlay = m.Overlay.enterCreateMode()
+		}
+		return m, true
+	case key.Matches(msg, m.Keys.OverlaySave):
+		return m, true
+	default:
+		return m, false
+	}
 }
 
 func selectAdjacentWorkspaceModeWorkspace(m Model, forward bool) (Model, bool) {

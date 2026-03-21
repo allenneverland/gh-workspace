@@ -3,20 +3,23 @@ package app
 import "github.com/charmbracelet/bubbles/key"
 
 type KeyMap struct {
-	NextWorkspace key.Binding
-	PrevWorkspace key.Binding
-	NextTab       key.Binding
-	PrevTab       key.Binding
-	TabOverview   key.Binding
-	TabWorktrees  key.Binding
-	TabLazygit    key.Binding
-	TabDiff       key.Binding
-	AddRepo       key.Binding
-	SelectRepo    key.Binding
-	RemoveRepo    key.Binding
-	ManualRefresh key.Binding
-	TogglePolling key.Binding
-	Quit          key.Binding
+	NextWorkspace    key.Binding
+	PrevWorkspace    key.Binding
+	WorkspaceOverlay key.Binding
+	OverlayCreate    key.Binding
+	OverlaySave      key.Binding
+	NextTab          key.Binding
+	PrevTab          key.Binding
+	TabOverview      key.Binding
+	TabWorktrees     key.Binding
+	TabLazygit       key.Binding
+	TabDiff          key.Binding
+	AddRepo          key.Binding
+	SelectRepo       key.Binding
+	RemoveRepo       key.Binding
+	ManualRefresh    key.Binding
+	TogglePolling    key.Binding
+	Quit             key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -28,6 +31,18 @@ func DefaultKeyMap() KeyMap {
 		PrevWorkspace: key.NewBinding(
 			key.WithKeys("["),
 			key.WithHelp("[", "prev workspace"),
+		),
+		WorkspaceOverlay: key.NewBinding(
+			key.WithKeys("w"),
+			key.WithHelp("w", "workspace overlay"),
+		),
+		OverlayCreate: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "overlay create"),
+		),
+		OverlaySave: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "overlay save"),
 		),
 		NextTab: key.NewBinding(
 			key.WithKeys("tab"),

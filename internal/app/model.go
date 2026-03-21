@@ -373,6 +373,7 @@ type Model struct {
 	WindowWidth                  int
 	WindowHeight                 int
 	State                        WorkspaceState
+	Overlay                      WorkspaceOverlayState
 	Keys                         KeyMap
 	AddRepoRequested             bool
 	RepoPathInput                RepoPathInput
@@ -418,6 +419,7 @@ func NewModel(config Config) Model {
 		CenterPaneWidth:       80,
 		RightPaneWidth:        40,
 		State:                 NewWorkspaceState(state),
+		Overlay:               resetWorkspaceOverlay(""),
 		Keys:                  DefaultKeyMap(),
 		RepoPathInput:         newRepoPathInput(),
 		StateStore:            config.StateStore,
@@ -471,6 +473,7 @@ func (m Model) CenterTabs() []Tab {
 func (m Model) cloneForUpdate() Model {
 	cloned := m
 	cloned.State = WorkspaceState{Snapshot: cloneWorkspaceState(m.State.Snapshot)}
+	cloned.Overlay = cloneWorkspaceOverlayState(m.Overlay)
 	return cloned
 }
 
