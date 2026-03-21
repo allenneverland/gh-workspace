@@ -6,6 +6,64 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestOverlay_Create_TextInputWDoesNotToggleOverlay(t *testing.T) {
+	tests := []struct {
+		name        string
+		focus       OverlayFocus
+		setup       func(*Model)
+		wantInput   func(WorkspaceOverlayState) string
+		wantInputFn func(*WorkspaceOverlayState)
+	}{
+		{
+			name:  "create-name-input",
+			focus: OverlayFocusCreateNameInput,
+			setup: func(m *Model) {
+				m.Overlay.CreateNameInput = "team"
+			},
+			wantInputFn: func(overlay *WorkspaceOverlayState) { overlay.CreateNameInput += "w" },
+		},
+		{
+			name:  "scan-path-input",
+			focus: OverlayFocusScanPathInput,
+			setup: func(m *Model) {
+				m.Overlay.ScanPathInput = "/tmp/projects"
+			},
+			wantInputFn: func(overlay *WorkspaceOverlayState) { overlay.ScanPathInput += "w" },
+		},
+		{
+			name:  "candidate-query",
+			focus: OverlayFocusCandidateList,
+			setup: func(m *Model) {
+				m.Overlay.CandidateQuery = "api"
+			},
+			wantInputFn: func(overlay *WorkspaceOverlayState) { overlay.CandidateQuery += "w" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := seededCreateOverlayModelForScanTests()
+			m.Overlay.Focus = tt.focus
+			tt.setup(&m)
+
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+			got := updated.(Model)
+
+			if !got.Overlay.Active {
+				t.Fatalf("expected overlay to remain active, got %#v", got.Overlay)
+			}
+
+			want := m.Overlay
+			tt.wantInputFn(&want)
+			if got.Overlay.CreateNameInput != want.CreateNameInput ||
+				got.Overlay.ScanPathInput != want.ScanPathInput ||
+				got.Overlay.CandidateQuery != want.CandidateQuery {
+				t.Fatalf("expected typed w to update focused input, got %#v want %#v", got.Overlay, want)
+			}
+		})
+	}
+}
+
 func TestOverlay_Create_ScanPathInputChangeSchedulesScanWithRevision(t *testing.T) {
 	m := seededCreateOverlayModelForScanTests()
 	m.Overlay.Focus = OverlayFocusScanPathInput
@@ -109,6 +167,27 @@ func TestOverlay_Create_EnterCandidate_DuplicateRejectedWithAlreadyAdded(t *test
 	}
 }
 
+func TestOverlay_Create_EnterCandidate_DuplicateRejectedAfterPathNormalization(t *testing.T) {
+	m := seededCreateOverlayModelForScanTests()
+	m.Overlay.Focus = OverlayFocusCandidateList
+	m.Overlay.CandidateQuery = "repo"
+	m.Overlay.Candidates = []RepoCandidate{
+		{Name: "repo", Path: "/tmp/repo"},
+	}
+	m.Overlay.StagedRepos = []RepoCandidate{{Name: "repo", Path: "/tmp/repo/"}}
+	m.Overlay.SelectedCandidateIndex = 0
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+
+	if got.Overlay.LastError != "already added" {
+		t.Fatalf("expected normalized duplicate add error %q, got %q", "already added", got.Overlay.LastError)
+	}
+	if len(got.Overlay.StagedRepos) != 1 {
+		t.Fatalf("expected staged repos to remain unchanged, got %#v", got.Overlay)
+	}
+}
+
 func TestFilterCandidates_EmptyQueryPreservesOriginalOrder(t *testing.T) {
 	candidates := []RepoCandidate{
 		{Name: "beta", Path: "/tmp/beta"},
@@ -124,6 +203,30 @@ func TestFilterCandidates_EmptyQueryPreservesOriginalOrder(t *testing.T) {
 	for i := range candidates {
 		if got[i] != candidates[i] {
 			t.Fatalf("expected original ordering, got %#v", got)
+		}
+	}
+}
+
+func TestFilterCandidates_CaseInsensitiveSubsequenceMatches(t *testing.T) {
+	candidates := []RepoCandidate{
+		{Name: "BuildDeploy", Path: "/tmp/build"},
+		{Name: "bXdp", Path: "/tmp/bxdp"},
+		{Name: "zzz", Path: "/tmp/zzz"},
+	}
+
+	got := FilterCandidates(candidates, "BDP")
+
+	want := []RepoCandidate{
+		{Name: "bXdp", Path: "/tmp/bxdp"},
+		{Name: "BuildDeploy", Path: "/tmp/build"},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("expected %d candidates, got %d", len(want), len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected filtered order %#v, got %#v", want, got)
 		}
 	}
 }
